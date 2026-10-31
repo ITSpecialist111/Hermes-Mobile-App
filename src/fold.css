@@ -26,3 +26,10 @@ html[data-posture='tabletop'] .app.chat-shell .latest-button,
 html[data-posture='tabletop'] .app.chat-shell .mention-popover,
 html[data-posture='tabletop'] .app.chat-shell .model-popover,
 html[data-posture='tabletop'] .app.chat-shell .reasoning-popover{bottom:calc(100dvh - var(--hinge-y,50dvh) + 8px)}
+
+/* Narrow columns (the Fold7's inner screen with the computer column open) leave the composer row
+   ~260px: the model and effort chips shrink with an ellipsis so the mic and Send stay inside it. */
+.composer-toolbar{min-width:0}
+.composer-selector{min-width:0;overflow:hidden}
+.composer-selector>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.composer-selector>svg,.composer-icon,.composer-send{flex-shrink:0}

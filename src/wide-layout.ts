@@ -75,3 +75,43 @@ export function saveWideLayout(layout: WideLayout, store: WriteStore | undefined
   if (!store) return
   try { store.setItem(WIDE_LAYOUT_KEY, JSON.stringify(layout)) } catch { /* keep the in-memory value */ }
 }
+
+/** The conversation's minimum, the side columns' comfortable minimum and default, and both dividers. */
+export const MAIN_MIN = 340
+const SIDE_MIN = 248
+const SIDE_DEFAULT = 296
+const DIVIDERS = 14
+
+/** Narrowest viewport that shows the Bots rail, the conversation and the computer column together. */
+export const THREE_COLUMN_MIN = SIDE_MIN * 2 + MAIN_MIN + DIVIDERS
+
+export type WideColumns = {
+  rail: number
+  context: number
+  railHidden: boolean
+  contextHidden: boolean
+  /** The rail is hidden only because the computer column needs the room (not the user's choice). */
+  railAutoHidden: boolean
+  template: string
+}
+
+/**
+ * Fit the stored layout to the viewport. A Galaxy Z Fold7's inner screen (~757px) cannot hold
+ * all three columns, so there the open computer column takes the rail's place until it is closed;
+ * otherwise side columns shrink (never the conversation below MAIN_MIN) so nothing runs off-screen.
+ * The stored layout is not changed: the same choice comes back on a wider screen.
+ */
+export function fitWideColumns(layout: WideLayout, viewportWidth: number): WideColumns {
+  const contextHidden = layout.contextCollapsed
+  const railAutoHidden = !layout.railCollapsed && !contextHidden && viewportWidth < THREE_COLUMN_MIN
+  const railHidden = layout.railCollapsed || railAutoHidden
+  let rail = railHidden ? 0 : layout.railWidth ?? SIDE_DEFAULT
+  let context = contextHidden ? 0 : layout.contextWidth ?? SIDE_DEFAULT
+  const room = Math.max(0, viewportWidth - DIVIDERS - MAIN_MIN)
+  if (rail + context > room) {
+    const scale = room / (rail + context)
+    rail = Math.floor(rail * scale)
+    context = Math.floor(context * scale)
+  }
+  return { rail, context, railHidden, contextHidden, railAutoHidden, template: `${rail}px 7px minmax(${MAIN_MIN}px,1fr) 7px ${context}px` }
+}

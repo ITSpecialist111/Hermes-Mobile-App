@@ -28,7 +28,7 @@ import { navDirectionFor, setNavDirection } from './nav-direction'
 import { haptic } from './haptics'
 import { connectAndSubmit, createGroup, createProfile, interruptSession, loadMessages, loadSnapshot, savedHermesEndpoint, setActiveHermesEndpoint, setProfileGroups, setServerRequestHandler, storedSessionForLiveId, type LiveMessage, type LiveProfile, type LiveSession, type LiveUsage } from './hermes'
 import { reconcileMessages, TURN_SILENCE_MS } from './chat-reconcile'
-import { readWideLayout, saveWideLayout, WIDE_QUERY, type WideLayout } from './wide-layout'
+import { fitWideColumns, readWideLayout, saveWideLayout, THREE_COLUMN_MIN, WIDE_QUERY, type WideLayout } from './wide-layout'
 import { applyFoldState, bookColumns, FLAT, watchFoldState, type FoldState } from './fold-posture'
 import { createApprovalBroker, type ApprovalChoice, type ApprovalRequest } from './approvals'
 import { ApprovalSheet } from './components/ApprovalSheet'
@@ -510,7 +510,7 @@ export default function App() {
   // launches. The default hides the right column, so the conversation gets the space until the
   // pane is asked for; a stored choice always beats that default.
   const [layout, setLayout] = useState<WideLayout>(() => readWideLayout())
-  const { railCollapsed, contextCollapsed, railWidth, contextWidth } = layout
+  const { railCollapsed, contextCollapsed } = layout
   const updateLayout = useCallback((patch: Partial<WideLayout>) => {
     setLayout(current => {
       const next = { ...current, ...patch }
@@ -837,7 +837,7 @@ export default function App() {
   // to the divider itself once the pointer is captured, so it cannot leak past release.
   function dragColumn(kind: 'rail' | 'context', event: { clientX: number; pointerId: number; currentTarget: HTMLButtonElement }) {
     const startX = event.clientX
-    const startWidth = (kind === 'rail' ? railWidth : contextWidth) ?? 296
+    const startWidth = (kind === 'rail' ? columns.rail : columns.context) || 296
     const handle = event.currentTarget
     handle.setPointerCapture(event.pointerId)
     let dragged = false
@@ -855,7 +855,7 @@ export default function App() {
       handle.removeEventListener('pointerup', onUp)
       handle.removeEventListener('pointercancel', onUp)
       if (dragged) return
-      if (kind === 'rail') updateLayout({ railCollapsed: !railCollapsed }); else updateLayout({ contextCollapsed: !contextCollapsed })
+      if (kind === 'rail') { if (columns.railHidden) showRail(); else updateLayout({ railCollapsed: true }) } else updateLayout({ contextCollapsed: !contextCollapsed })
     }
     handle.addEventListener('pointermove', onMove)
     handle.addEventListener('pointerup', onUp)
@@ -866,11 +866,15 @@ export default function App() {
   // Bot's settings no longer collapses the layout back to a single column.
   // Book posture: the Bots rail is the left page and the conversation the right page.
   const bookGrid = fold.posture === 'book' && fold.hinge && !railCollapsed ? bookColumns(fold.hinge, viewportWidth) : null
-  return <div className={`wide-shell${railCollapsed ? ' rail-collapsed' : ''}${contextCollapsed || bookGrid ? ' context-collapsed' : ''}${bookGrid ? ' book-posture' : ''}`}
-    style={bookGrid ? { gridTemplateColumns: bookGrid } : railWidth === null && contextWidth === null ? undefined : {
-      gridTemplateColumns: `${railCollapsed ? 0 : railWidth ?? 296}px 7px minmax(340px,1fr) 7px ${contextCollapsed ? 0 : contextWidth ?? 296}px`,
-    }}>
-    {railCollapsed && <button className="wide-rail-reveal" onClick={() => updateLayout({ railCollapsed: false })} aria-label="Show Bots column"><ChevronRight size={13}/></button>}
+  const columns = fitWideColumns(layout, viewportWidth)
+  // On a screen too narrow for three columns the rail makes way for the computer column, so
+  // bringing either back closes the other rather than overflowing the screen.
+  const showRail = () => updateLayout(columns.railAutoHidden || (viewportWidth < THREE_COLUMN_MIN && !contextCollapsed)
+    ? { railCollapsed: false, contextCollapsed: true }
+    : { railCollapsed: false })
+  return <div className={`wide-shell${columns.railHidden ? ' rail-collapsed' : ''}${columns.contextHidden || bookGrid ? ' context-collapsed' : ''}${bookGrid ? ' book-posture' : ''}`}
+    style={{ gridTemplateColumns: bookGrid ?? columns.template }}>
+    {columns.railHidden && <button className="wide-rail-reveal" onClick={showRail} aria-label="Show Bots column"><ChevronRight size={13}/></button>}
     {contextCollapsed && !bookGrid && <button className="wide-context-reveal" onClick={() => updateLayout({ contextCollapsed: false })} aria-label="Show computer column"><ChevronLeft size={13}/></button>}
 
     <aside className="wide-rail" aria-label="Bots">
