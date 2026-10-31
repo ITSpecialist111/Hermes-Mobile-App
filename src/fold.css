@@ -17,6 +17,7 @@
 .phone-control-actions{display:flex;flex-wrap:wrap;gap:8px}
 .phone-control-actions button{display:inline-flex;align-items:center;gap:6px;min-height:38px}
 .phone-control-hint{font-size:12.5px}
+.phone-control-mode{margin:6px 18px 0;font-size:12.5px;line-height:1.45;opacity:.75}
 
 /* Tabletop (horizontal hinge, half-opened): transcript on the upright half, composer on the
    flat half just below the hinge, and popovers anchored above the crease. */

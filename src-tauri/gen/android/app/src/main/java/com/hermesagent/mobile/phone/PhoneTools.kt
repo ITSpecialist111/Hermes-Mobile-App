@@ -49,11 +49,11 @@ class PhoneTools(private val service: PhoneControlService) {
       props("direction" to propEnum("Finger direction.", "up", "down", "left", "right"), "element" to prop("integer", "Scrollable element to swipe within (optional)."), "x1" to prop("integer", "Start x"), "y1" to prop("integer", "Start y"), "x2" to prop("integer", "End x"), "y2" to prop("integer", "End y"))))
     .put(tool("phone_key", "Press a system key or open a system panel.",
       props("key" to propEnum("Which key.", "back", "home", "recents", "notifications", "quick_settings")), listOf("key")))
-    .put(tool("phone_open_app", "Launch an installed app by its name (e.g. 'Chrome', 'WhatsApp') or package name.",
+    .put(tool("phone_open_app", "Launch an installed app by its name (e.g. 'Chrome', 'WhatsApp', 'Amazon') or package name. Prefer this over the browser: if a task involves a service that has an app on the phone, use the app.",
       props("name" to prop("string", "App name or package.")), listOf("name")))
-    .put(tool("phone_list_apps", "List launchable apps installed on the phone.",
+    .put(tool("phone_list_apps", "List launchable apps installed on the phone. Check this before using the browser for a service (shopping, banking, messaging, social, travel, streaming…) so you use its app when installed.",
       props("filter" to prop("string", "Optional case-insensitive filter on name or package."))))
-    .put(tool("phone_open_url", "Open an http(s) link in the phone's default browser or the app that handles it.",
+    .put(tool("phone_open_url", "Open an http(s) link. Use it for general web research or when no installed app covers the service; links to a service whose app is installed usually open in that app.",
       props("url" to prop("string", "The http or https URL.")), listOf("url")))
     .put(tool("phone_wait", "Wait for the screen to settle (page loads, animations), then return the element list.",
       props("seconds" to prop("number", "Seconds to wait, 0.5 to 10 (default 2)."))))
@@ -91,12 +91,19 @@ class PhoneTools(private val service: PhoneControlService) {
 
   /** Numbered list of the elements an agent can act on, across the visible app and keyboard windows. */
   private fun describe(): String {
+    // The service only subscribes to window-state events, so in-page changes (e.g. a web page after a
+    // tap) would otherwise be read from a stale node cache and look like the action did nothing.
+    if (Build.VERSION.SDK_INT >= 33) service.clearCache()
     val collected = mutableListOf<Element>()
     val roots = windowRoots()
     val lines = StringBuilder()
     val metrics = service.resources.displayMetrics
     val app = service.rootInActiveWindow?.packageName ?: "unknown"
     lines.append("Foreground app: $app · screen ${metrics.widthPixels}x${metrics.heightPixels} px\n")
+    lines.append(if (PhoneControlSettings.askFirst(service))
+      "Confirmation: ask-first — the phone itself asks the user before risky taps (send, post, pay, delete…); just act, and it reports if they decline.\n"
+    else
+      "Confirmation: autopilot — the user lets you act without asking.\n")
     for ((label, root) in roots) {
       lines.append("— $label —\n")
       walk(root, collected, lines)
@@ -188,20 +195,96 @@ class PhoneTools(private val service: PhoneControlService) {
   private fun tap(args: JSONObject): JSONObject {
     val longPress = args.optBoolean("long_press", false)
     val target = element(args)
+    val verb = if (longPress) "press and hold" else "tap"
     val label: String
     if (target != null) {
       target.node.refresh()
-      val action = if (longPress) AccessibilityNodeInfo.ACTION_LONG_CLICK else AccessibilityNodeInfo.ACTION_CLICK
       val clickable = clickableAncestor(target.node, longPress)
-      val done = clickable?.performAction(action) == true
+      confirmRisky(verb, labelOf(target.node, clickable))?.let { return it }
+      target.node.refresh(); clickable?.refresh()
+      val action = if (longPress) AccessibilityNodeInfo.ACTION_LONG_CLICK else AccessibilityNodeInfo.ACTION_CLICK
+      // Chrome can report ACTION_CLICK on web content as handled without dispatching it, so web
+      // content gets a real finger tap at the element's visible centre.
+      val webPoint = if (isWebContent(target.node)) visibleCentre(target.node) else null
+      val done = if (webPoint != null) { gestureTap(webPoint.first, webPoint.second, longPress); true }
+        else clickable?.performAction(action) == true
       if (!done) gestureTap(target.bounds.centerX().toFloat(), target.bounds.centerY().toFloat(), longPress)
       label = "${if (longPress) "held" else "tapped"} element ${args.getInt("element")}"
     } else {
       if (!args.has("x") || !args.has("y")) throw IllegalArgumentException("Give an element number or x and y.")
-      gestureTap(args.getInt("x").toFloat(), args.getInt("y").toFloat(), longPress)
-      label = "${if (longPress) "held" else "tapped"} (${args.getInt("x")},${args.getInt("y")})"
+      val x = args.getInt("x"); val y = args.getInt("y")
+      // A coordinate tap is judged by the element under the point, so it cannot bypass Ask first.
+      if (elements.isEmpty()) describe()
+      val hit = elements.filter { it.bounds.contains(x, y) }.minByOrNull { it.bounds.width().toLong() * it.bounds.height() }
+      if (hit != null) confirmRisky(verb, labelOf(hit.node, clickableAncestor(hit.node, longPress)))?.let { return it }
+      gestureTap(x.toFloat(), y.toFloat(), longPress)
+      label = "${if (longPress) "held" else "tapped"} ($x,$y)"
     }
     return acted(label)
+  }
+
+  /** What the user sees ([shown]) and everything the risk check reads, including view ids ([all]). */
+  private class Label(val shown: String, val all: String)
+
+  /** Text, description and view id of the target, its clickable ancestor and its children. */
+  private fun labelOf(node: AccessibilityNodeInfo, clickable: AccessibilityNodeInfo?): Label {
+    val visible = mutableListOf<String>()
+    val ids = mutableListOf<String>()
+    fun add(n: AccessibilityNodeInfo?) {
+      if (n == null) return
+      n.text?.let { visible += it.toString() }
+      n.contentDescription?.let { visible += it.toString() }
+      n.viewIdResourceName?.let { ids += it.substringAfterLast('/').replace('_', ' ') }
+    }
+    add(node); add(clickable)
+    val container = clickable ?: node
+    for (i in 0 until minOf(container.childCount, 8)) add(container.getChild(i))
+    fun join(list: List<String>) = list.map { it.trim() }.filter { it.isNotEmpty() }.distinct().joinToString(" · ")
+    val shown = join(visible).ifEmpty { join(ids) }.take(120)
+    return Label(shown, join(visible + ids))
+  }
+
+  /** In Ask-first mode a risky action waits for Allow on the phone; returns a failure result if denied. */
+  private fun confirmRisky(verb: String, label: Label, detail: String = ""): JSONObject? {
+    if (!PhoneControlSettings.askFirst(service) || !PhoneConfirmation.isRisky(label.all)) return null
+    val app = foregroundAppName()
+    val what = label.shown.ifEmpty { "an unlabelled control" }
+    service.noteAction("waiting for you to allow: $verb \u201c$what\u201d")
+    val allowed = PhoneConfirmation.ask(service, "Hermes wants to $verb \u201c${what.take(60)}\u201d${if (app != null) " in $app" else ""}", detail.ifBlank { pendingText() })
+    if (allowed) return null
+    service.noteAction("you declined: $verb \u201c$what\u201d")
+    return failure("The user declined this on the phone (or did not answer within 60 seconds): $verb \u201c$what\u201d. Do not retry it; tell them what you were about to do and ask how to proceed.")
+  }
+
+  /** The message being composed, if any, so the confirmation shows what would be sent. */
+  private fun pendingText(): String {
+    val focused = service.rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+    val text = focused?.takeIf { it.isEditable && !it.isPassword }?.text?.toString()?.trim().orEmpty()
+    return if (text.isEmpty()) "" else "Text: \u201c${text.take(200)}\u201d"
+  }
+
+  private fun foregroundAppName(): String? {
+    val pkg = service.rootInActiveWindow?.packageName?.toString() ?: return null
+    return runCatching { service.packageManager.getApplicationLabel(service.packageManager.getApplicationInfo(pkg, 0)).toString() }.getOrNull()
+  }
+
+  private fun isWebContent(node: AccessibilityNodeInfo): Boolean {
+    var current: AccessibilityNodeInfo? = node
+    var hops = 0
+    while (current != null && hops < 40) {
+      if (current.className?.toString() == "android.webkit.WebView") return true
+      current = current.parent
+      hops++
+    }
+    return false
+  }
+
+  /** Centre of the part of the node that is on screen, or null if none of it is visible. */
+  private fun visibleCentre(node: AccessibilityNodeInfo): Pair<Float, Float>? {
+    val bounds = Rect().also { node.getBoundsInScreen(it) }
+    val metrics = service.resources.displayMetrics
+    if (!bounds.intersect(0, 0, metrics.widthPixels, metrics.heightPixels) || bounds.isEmpty) return null
+    return bounds.exactCenterX() to bounds.exactCenterY()
   }
 
   private fun clickableAncestor(node: AccessibilityNodeInfo, longPress: Boolean): AccessibilityNodeInfo? {
@@ -230,6 +313,8 @@ class PhoneTools(private val service: PhoneControlService) {
     if (!ok) throw IllegalStateException("The field did not accept the text.")
     var submitted = ""
     if (args.optBoolean("submit", false)) {
+      // Enter can send a message or place an order, so submitting is gated like a risky tap.
+      confirmRisky("submit", Label("typed text", "submit typed text"), "Text: \u201c${text.take(200)}\u201d")?.let { return it }
       Thread.sleep(250)
       submitted = if (Build.VERSION.SDK_INT >= 30 && node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)) " and submitted" else " (submit not supported here — tap the send/search button)"
     }
@@ -346,7 +431,9 @@ class PhoneTools(private val service: PhoneControlService) {
   companion object {
     private const val MAX_ELEMENTS = 160
     const val INSTRUCTIONS = "Tools to operate the user's Android phone (a Galaxy Z Fold7). Start with phone_screen, act by element number, " +
-      "and read the refreshed element list each action returns. Coordinates are screen pixels. Never type passwords, never send " +
-      "messages, payments or posts without the user's explicit confirmation in chat, and stop if a screen asks for credentials."
+      "and read the refreshed element list each action returns. Coordinates are screen pixels. App first: when a task involves a " +
+      "service (messaging, shopping, banking, social, travel, maps, streaming…), check phone_list_apps and use the installed app; use the " +
+      "browser for general web research or when no app covers it. Never type passwords and stop if a screen asks for credentials. " +
+      "phone_screen states the confirmation mode: in ask-first mode the phone asks the user before risky taps, so just act."
   }
 }

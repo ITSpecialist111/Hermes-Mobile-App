@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { hermesMcpSnippet, parsePhoneControlStatus, phoneControlAvailable, readPhoneControlStatus } from './phone-control'
+import { hermesMcpSnippet, parsePhoneControlStatus, phoneControlAvailable, phoneControlSummary, readPhoneControlStatus, setPhoneControlAskFirst } from './phone-control'
 
 const raw = JSON.stringify({ enabled: true, running: true, address: '192.168.68.82', port: 8765, url: 'http://192.168.68.82:8765/mcp', token: 'abc123def456' })
 
@@ -8,7 +8,22 @@ describe('phone control status', () => {
   afterEach(() => { delete (globalThis as { HermesPhoneControl?: unknown }).HermesPhoneControl })
 
   it('parses the native status', () => {
-    expect(parsePhoneControlStatus(raw)).toEqual({ enabled: true, running: true, address: '192.168.68.82', port: 8765, url: 'http://192.168.68.82:8765/mcp', token: 'abc123def456' })
+    expect(parsePhoneControlStatus(raw)).toEqual({ enabled: true, running: true, address: '192.168.68.82', port: 8765, url: 'http://192.168.68.82:8765/mcp', token: 'abc123def456', askFirst: true })
+  })
+
+  it('keeps Ask first on unless the phone explicitly reports it off', () => {
+    const base = { enabled: true, running: true, address: null, port: 8765, url: null, token: 't' }
+    expect(parsePhoneControlStatus(JSON.stringify(base))?.askFirst).toBe(true)
+    expect(parsePhoneControlStatus(JSON.stringify({ ...base, askFirst: 'no' }))?.askFirst).toBe(true)
+    expect(parsePhoneControlStatus(JSON.stringify({ ...base, askFirst: false }))?.askFirst).toBe(false)
+  })
+
+  it('switches Ask first through the bridge, and refuses without it', () => {
+    expect(setPhoneControlAskFirst(false)).toBe(false)
+    const calls: boolean[] = []
+    ;(globalThis as { HermesPhoneControl?: unknown }).HermesPhoneControl = { status: () => raw, openAccessibilitySettings() {}, rotateToken: () => 'x', setAskFirst: (value: boolean) => calls.push(value) }
+    expect(setPhoneControlAskFirst(false)).toBe(true)
+    expect(calls).toEqual([false])
   })
 
   it('rejects malformed payloads', () => {
@@ -36,5 +51,13 @@ describe('phone control status', () => {
     expect(snippet).toContain('url: http://192.168.68.82:8765/mcp')
     expect(snippet).toContain('Authorization: "Bearer ${HERMES_PHONE_TOKEN}"')
     expect(snippet.split('\n').filter(line => line.includes('abc123def456'))).toEqual(['# .env of the same profile:  HERMES_PHONE_TOKEN=abc123def456'])
+  })
+
+  it('summarises the mode for the Settings list', () => {
+    const status = parsePhoneControlStatus(raw)!
+    expect(phoneControlSummary(null)).toBe('Off')
+    expect(phoneControlSummary({ ...status, running: false })).toBe('Off')
+    expect(phoneControlSummary({ ...status, askFirst: true })).toBe('On · Ask first')
+    expect(phoneControlSummary({ ...status, askFirst: false })).toBe('On · Autopilot')
   })
 })

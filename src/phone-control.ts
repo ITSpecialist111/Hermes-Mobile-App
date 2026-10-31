@@ -12,9 +12,11 @@ export type PhoneControlStatus = {
   port: number
   url: string | null
   token: string
+  /** Ask on the phone before risky taps (default). Off = autopilot. */
+  askFirst: boolean
 }
 
-type Bridge = { status(): string; openAccessibilitySettings(): void; rotateToken(): string }
+type Bridge = { status(): string; openAccessibilitySettings(): void; rotateToken(): string; setAskFirst?(value: boolean): void }
 
 const bridge = (): Bridge | null => {
   const candidate = (globalThis as { HermesPhoneControl?: Bridge }).HermesPhoneControl
@@ -37,6 +39,8 @@ export function parsePhoneControlStatus(raw: unknown): PhoneControlStatus | null
       port: value.port,
       url: typeof value.url === 'string' ? value.url : null,
       token: value.token,
+      // Safe default: anything but an explicit false keeps Ask first on.
+      askFirst: value.askFirst !== false,
     }
   } catch {
     return null
@@ -55,6 +59,18 @@ export function openAccessibilitySettings(): void {
 
 export function rotatePhoneControlToken(): string | null {
   try { return bridge()?.rotateToken() ?? null } catch { return null }
+}
+
+export function setPhoneControlAskFirst(value: boolean): boolean {
+  const native = bridge()
+  if (!native?.setAskFirst) return false
+  try { native.setAskFirst(value); return true } catch { return false }
+}
+
+/** One-line state for the Settings list, e.g. "On · Ask first". */
+export function phoneControlSummary(status: PhoneControlStatus | null): string {
+  if (!status?.running) return 'Off'
+  return `On · ${status.askFirst ? 'Ask first' : 'Autopilot'}`
 }
 
 /** The Hermes config a host needs to reach this phone; the token belongs in the profile's .env. */

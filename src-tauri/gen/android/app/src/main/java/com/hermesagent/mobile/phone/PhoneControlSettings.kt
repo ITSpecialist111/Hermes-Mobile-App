@@ -12,6 +12,15 @@ object PhoneControlSettings {
   const val PORT = 8765
   private const val PREFS = "hermes-phone-control"
   private const val TOKEN = "token"
+  private const val ASK_FIRST = "ask_first"
+
+  /** Ask the user on the phone before risky taps (send, post, pay, delete…). On unless they turn it off. */
+  fun askFirst(context: Context): Boolean =
+    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(ASK_FIRST, true)
+
+  fun setAskFirst(context: Context, value: Boolean) {
+    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(ASK_FIRST, value).apply()
+  }
 
   fun token(context: Context): String {
     val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

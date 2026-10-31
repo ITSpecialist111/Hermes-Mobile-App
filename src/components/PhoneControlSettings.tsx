@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Copy, RefreshCw, Smartphone, SmartphoneNfc } from 'lucide-react'
 
 import { useEdgeSwipeBack } from '../edge-swipe'
-import { hermesMcpSnippet, openAccessibilitySettings, phoneControlAvailable, readPhoneControlStatus, rotatePhoneControlToken, type PhoneControlStatus } from '../phone-control'
+import { hermesMcpSnippet, openAccessibilitySettings, phoneControlAvailable, readPhoneControlStatus, rotatePhoneControlToken, setPhoneControlAskFirst, type PhoneControlStatus } from '../phone-control'
 
 /**
  * Settings → Phone control. Android only lets the user switch an accessibility service on, so
@@ -44,7 +44,18 @@ export function PhoneControlSettings({ back }: { back: () => void }) {
 
     {available && <section className="menu-list">
       <button onClick={() => openAccessibilitySettings()}>{status?.enabled ? 'Turn off in Accessibility settings' : 'Turn on in Accessibility settings'} <span>›</span></button>
+      {status && <button className="settings-toggle-row" aria-pressed={status.askFirst} onClick={() => {
+        const next = !status.askFirst
+        if (setPhoneControlAskFirst(next)) {
+          setStatus(readPhoneControlStatus())
+          setHint(next ? 'Ask first is on: the phone asks you before Bots send, post, pay or delete.' : 'Autopilot is on: Bots act without asking. Turn Ask first back on at any time.')
+        }
+      }}>Ask first <span className={`capability-toggle ${status.askFirst ? 'on' : ''}`}><i/>{status.askFirst ? 'ON' : 'OFF'}</span></button>}
     </section>}
+
+    {available && status && <p className="phone-control-mode">{status.askFirst
+      ? 'Before a Bot taps anything that sends, posts, pays, buys, deletes or confirms, an Allow / Deny card appears on this phone. No answer within 60 seconds counts as Deny.'
+      : 'Autopilot: Bots act without asking. Typing into password fields is still always blocked, and the notification still shows every action with Stop.'}</p>}
 
     {available && status && <section className="phone-control-details">
       <h3>Connect a Hermes Bot</h3>

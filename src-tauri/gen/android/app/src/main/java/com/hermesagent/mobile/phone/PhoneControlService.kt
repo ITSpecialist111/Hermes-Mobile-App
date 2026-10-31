@@ -75,7 +75,7 @@ class PhoneControlService : AccessibilityService() {
     val open = packageManager.getLaunchIntentForPackage(packageName)?.let { PendingIntent.getActivity(this, 2, it, PendingIntent.FLAG_IMMUTABLE) }
     val notification = NotificationCompat.Builder(this, CHANNEL)
       .setSmallIcon(R.drawable.ic_phone_control)
-      .setContentTitle("Hermes can control this phone")
+      .setContentTitle(if (PhoneControlSettings.askFirst(this)) "Hermes can control this phone · Ask first" else "Hermes can control this phone · Autopilot")
       .setContentText(text)
       .setOngoing(true)
       .setOnlyAlertOnce(true)

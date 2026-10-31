@@ -102,7 +102,14 @@ class MainActivity : TauriActivity() {
         .put("port", PhoneControlSettings.PORT)
         .put("url", address?.let { "http://$it:${PhoneControlSettings.PORT}/mcp" } ?: JSONObject.NULL)
         .put("token", PhoneControlSettings.token(this@MainActivity))
+        .put("askFirst", PhoneControlSettings.askFirst(this@MainActivity))
         .toString()
+    }
+
+    @JavascriptInterface
+    fun setAskFirst(value: Boolean) {
+      PhoneControlSettings.setAskFirst(this@MainActivity, value)
+      PhoneControlService.instance?.noteAction(if (value) "Ask first turned on" else "Autopilot turned on")
     }
 
     @JavascriptInterface
