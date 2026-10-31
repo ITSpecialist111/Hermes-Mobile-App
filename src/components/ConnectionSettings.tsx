@@ -10,11 +10,13 @@ import { navDirectionFor, setNavDirection } from '../nav-direction'
 import { haptic, hapticsEnabled, setHapticsEnabled } from '../haptics'
 import { nativeSignIn, passwordSignIn, probeHermesGateway, type LiveProfile } from '../hermes'
 import { NotificationsSettings } from './NotificationsSettings'
+import { PhoneControlSettings } from './PhoneControlSettings'
+import { phoneControlAvailable, readPhoneControlStatus } from '../phone-control'
 
 const HermesMobileLogo = HermesMobileAboutMark
 
 type Theme = 'dark' | 'light' | 'grey' | 'aurora'
-type Page = 'root' | 'pairing' | 'about' | 'notifications'
+type Page = 'root' | 'pairing' | 'about' | 'notifications' | 'phone'
 
 type Props = {
   profiles: number
@@ -209,6 +211,7 @@ export function ConnectionSettings({ profiles, botProfiles, sessions, connected,
     }
   }
   if (page === 'about') return <AboutHermesMobile back={() => setPage('root')}/>
+  if (page === 'phone') return <PhoneControlSettings back={() => setPage('root')}/>
   if (page === 'notifications') return <NotificationsSettings back={() => setPage('root')} profiles={botProfiles}/>
   if (page === 'pairing') return <PairingSettings back={() => setPage('root')} onPaired={onPaired} onPairingBusy={onPairingBusy} initialEndpoint={endpoint}/>
   const displayEndpoint = endpoint?.replace(/^https?:\/\//, '')
@@ -222,6 +225,6 @@ export function ConnectionSettings({ profiles, botProfiles, sessions, connected,
       <button className={`primary wide connection-sync-button ${syncState}`} disabled={connected && syncState === 'syncing'} aria-busy={connected && syncState === 'syncing'} onClick={connected ? () => void syncNow() : endpoint ? () => void refresh() : () => setPage('pairing')}>{connected ? syncState === 'syncing' ? <><LoaderCircle className="connection-sync-spinner" size={17}/> Syncing…</> : syncState === 'success' ? <><CheckCircle2 size={17}/> Synced</> : 'Sync now' : endpoint ? 'Retry saved connection' : 'Set up security & pairing'}</button>
       {connected && syncState !== 'idle' && <p className={`connection-sync-result ${syncState}`} role="status">{syncState === 'syncing' ? 'Refreshing live Hermes data…' : syncState === 'success' ? 'Synced with Hermes Desktop just now.' : 'Sync could not complete. Check the host connection and try again.'}</p>}
     </section>
-    <section className="menu-list"><button onClick={() => setPage('notifications')}>Notifications <span>›</span></button><button onClick={() => setShowThemes(value => !value)}>Appearance <span>{themes.find(item => item.id === theme)?.label} ›</span></button>{showThemes && <div className="theme-picker">{themes.map(item => <button className={item.id === theme ? 'selected' : ''} onClick={() => setTheme(item.id)} key={item.id}><span className={`theme-swatch theme-${item.id}`}/><span><b>{item.label}</b><small>{item.description}</small></span><i>{item.id === theme ? '✓' : ''}</i></button>)}</div>}<button onClick={() => setPage('pairing')}>Security &amp; Pairing <span className={connected ? '' : 'connection-attention'}>{connected ? 'Connected ›' : 'Disconnected ›'}</span></button><button className="settings-toggle-row" onClick={toggleHaptics} aria-pressed={hapticsOn}>Haptics Vibration <span className={`capability-toggle ${hapticsOn ? 'on' : ''}`}><i/>{hapticsOn ? 'ON' : 'OFF'}</span></button><button onClick={() => setPage('about')}>About Hermes Mobile <span>{APP_VERSION} ›</span></button></section>
+    <section className="menu-list"><button onClick={() => setPage('notifications')}>Notifications <span>›</span></button><button onClick={() => setShowThemes(value => !value)}>Appearance <span>{themes.find(item => item.id === theme)?.label} ›</span></button>{showThemes && <div className="theme-picker">{themes.map(item => <button className={item.id === theme ? 'selected' : ''} onClick={() => setTheme(item.id)} key={item.id}><span className={`theme-swatch theme-${item.id}`}/><span><b>{item.label}</b><small>{item.description}</small></span><i>{item.id === theme ? '✓' : ''}</i></button>)}</div>}<button onClick={() => setPage('pairing')}>Security &amp; Pairing <span className={connected ? '' : 'connection-attention'}>{connected ? 'Connected ›' : 'Disconnected ›'}</span></button><button className="settings-toggle-row" onClick={toggleHaptics} aria-pressed={hapticsOn}>Haptics Vibration <span className={`capability-toggle ${hapticsOn ? 'on' : ''}`}><i/>{hapticsOn ? 'ON' : 'OFF'}</span></button>{phoneControlAvailable() && <button onClick={() => setPage('phone')}>Phone control <span>{readPhoneControlStatus()?.running ? 'On ›' : 'Off ›'}</span></button>}<button onClick={() => setPage('about')}>About Hermes Mobile <span>{APP_VERSION} ›</span></button></section>
   </main>
 }

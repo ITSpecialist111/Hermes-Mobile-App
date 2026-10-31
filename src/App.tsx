@@ -522,6 +522,9 @@ export default function App() {
   // The New Bot control is a menu, not a button: creating a Bot and starting a fresh chat
   // with an existing one are the two things a user means by "new" here.
   const [newBotMenuOpen, setNewBotMenuOpen] = useState(false)
+  // The inner screen's Bots rail carries the same New Chat / New Bot / New group choices as
+  // the cover screen's footer, which the unfolded layout otherwise hides behind an open chat.
+  const [railMenuOpen, setRailMenuOpen] = useState(false)
   const [newChatOpen, setNewChatOpen] = useState(false)
   const [newChatBusy, setNewChatBusy] = useState(false)
   const [newChatError, setNewChatError] = useState('')
@@ -874,6 +877,14 @@ export default function App() {
       <header className="wide-rail-head">
         <b>Bots</b>
         <span className="wide-rail-actions">
+          <span className="new-bot-wrap">
+            {railMenuOpen && <div className="new-bot-menu rail-menu" role="menu">
+              <button role="menuitem" onClick={() => { setRailMenuOpen(false); setNewChatOpen(true) }}><MessageSquare size={15}/> New Chat</button>
+              <button role="menuitem" onClick={() => { setRailMenuOpen(false); setCreateOpen(true) }}><Plus size={15}/> New Bot</button>
+              <button role="menuitem" onClick={() => { setRailMenuOpen(false); setGroupError(''); setNewGroupOpen(true) }}><Users size={15}/> New group</button>
+            </div>}
+            <button className="round-control" onClick={() => setRailMenuOpen(value => !value)} aria-label="New chat, Bot or group" aria-haspopup="menu" aria-expanded={railMenuOpen}><Plus size={16}/></button>
+          </span>
           <button className="round-control" onClick={() => setSearching(value => !value)} aria-label="Search Bots"><Search size={16}/></button>
           <button className="round-control" onClick={() => setSettings(true)} aria-label="Settings"><SettingsIcon size={16}/></button>
         </span>

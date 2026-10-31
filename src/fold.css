@@ -5,6 +5,18 @@
 .wide-shell.book-posture>.wide-divider{cursor:default}
 /* The fixed roster footer is centred on the screen; keep it on the right page instead. */
 .wide-shell.book-posture .roster-actions{left:calc(var(--hinge-x,50vw) + var(--hinge-width,0px) + 4px);right:0;width:auto;max-width:540px;transform:none}
+/* The rail's + menu opens downwards from the header (the footer menu opens upwards). */
+.new-bot-menu.rail-menu{bottom:auto;top:calc(100% + 8px);left:0;right:auto}
+
+/* Settings → Phone control */
+.phone-control-details{margin:14px 16px 24px;display:flex;flex-direction:column;gap:10px}
+.phone-control-details h3{margin:4px 0 0;font-size:14px}
+.phone-control-details p{margin:0;font-size:13px;opacity:.8;line-height:1.45}
+.phone-control-details code{font-size:12.5px;word-break:break-all}
+.phone-control-details pre{margin:0;padding:10px 12px;border-radius:10px;background:rgba(0,0,0,.35);font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-all}
+.phone-control-actions{display:flex;flex-wrap:wrap;gap:8px}
+.phone-control-actions button{display:inline-flex;align-items:center;gap:6px;min-height:38px}
+.phone-control-hint{font-size:12.5px}
 
 /* Tabletop (horizontal hinge, half-opened): transcript on the upright half, composer on the
    flat half just below the hinge, and popovers anchored above the crease. */

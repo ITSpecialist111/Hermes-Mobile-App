@@ -1,7 +1,10 @@
 package com.hermesagent.mobile
 
 import android.annotation.SuppressLint
+import android.content.ComponentName
+import android.content.Intent
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
@@ -12,6 +15,8 @@ import androidx.window.java.layout.WindowInfoTrackerCallbackAdapter
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
 import androidx.window.layout.WindowLayoutInfo
+import com.hermesagent.mobile.phone.PhoneControlService
+import com.hermesagent.mobile.phone.PhoneControlSettings
 import io.crates.keyring.Keyring
 import org.json.JSONObject
 
@@ -38,6 +43,8 @@ class MainActivity : TauriActivity() {
     this.webView = webView
     // Pull side of the fold bridge: survives reloads, read by src/fold-posture.ts.
     webView.addJavascriptInterface(FoldBridge(), "HermesFoldBridge")
+    // Phone-control status for Settings → Phone control (src/phone-control.ts).
+    webView.addJavascriptInterface(PhoneControlBridge(), "HermesPhoneControl")
   }
 
   override fun onStart() {
@@ -80,5 +87,30 @@ class MainActivity : TauriActivity() {
   private inner class FoldBridge {
     @JavascriptInterface
     fun state(): String = foldJson
+  }
+
+  private inner class PhoneControlBridge {
+    @JavascriptInterface
+    fun status(): String {
+      val component = ComponentName(this@MainActivity, PhoneControlService::class.java).flattenToString()
+      val enabledList = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES).orEmpty()
+      val address = PhoneControlSettings.lanAddress()
+      return JSONObject()
+        .put("enabled", enabledList.split(':').any { it.equals(component, ignoreCase = true) })
+        .put("running", PhoneControlService.instance != null)
+        .put("address", address ?: JSONObject.NULL)
+        .put("port", PhoneControlSettings.PORT)
+        .put("url", address?.let { "http://$it:${PhoneControlSettings.PORT}/mcp" } ?: JSONObject.NULL)
+        .put("token", PhoneControlSettings.token(this@MainActivity))
+        .toString()
+    }
+
+    @JavascriptInterface
+    fun openAccessibilitySettings() {
+      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    @JavascriptInterface
+    fun rotateToken(): String = PhoneControlSettings.rotateToken(this@MainActivity)
   }
 }

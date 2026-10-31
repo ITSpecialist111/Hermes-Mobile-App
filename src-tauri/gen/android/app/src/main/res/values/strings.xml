@@ -1,4 +1,7 @@
 <resources>
     <string name="app_name">"Hermes Mobile"</string>
     <string name="main_activity_title">"Hermes Mobile"</string>
+    <string name="phone_control_label">Hermes phone control</string>
+    <string name="phone_control_summary">Lets your Hermes Bots operate this phone</string>
+    <string name="phone_control_description">Lets the Bots on your own Hermes host read the screen and tap, type, swipe and open apps on this phone, so they can carry out tasks you ask for. Bots connect only from your private network with this phone\'s access token. Typing into password fields is blocked. A notification shows every action and has a Stop button.</string>
 </resources>
