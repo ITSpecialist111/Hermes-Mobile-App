@@ -19,8 +19,18 @@ export type WideLayout = {
 
 export const WIDE_LAYOUT_KEY = 'hermes-mobile-wide-layout'
 
-/** The viewport width that earns the tri-fold workspace (unfolded foldables, tablets). */
-export const WIDE_QUERY = '(min-width: 900px)'
+/**
+ * The viewport that earns the tri-fold workspace (unfolded foldables, tablets).
+ *
+ * 900px alone misses book-style foldables: an unfolded iPhone Duo is ~626pt wide and a Galaxy
+ * Z Fold with a larger Screen zoom drops well below 900. Any viewport that is at least 600px
+ * on BOTH axes is an unfolded/tablet surface (a phone is never that tall in landscape nor that
+ * wide in portrait), and the rail + conversation grid needs only ~600px.
+ */
+export const WIDE_QUERY = '(min-width: 900px), (min-width: 600px) and (min-height: 600px)'
+
+/** Mirrors WIDE_QUERY for callers (and tests) that have dimensions rather than a media query. */
+export const isWideViewport = (width: number, height: number) => width >= 900 || (width >= 600 && height >= 600)
 
 export const DEFAULT_WIDE_LAYOUT: WideLayout = {
   railWidth: null,

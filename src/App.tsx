@@ -29,6 +29,7 @@ import { haptic } from './haptics'
 import { connectAndSubmit, createGroup, createProfile, interruptSession, loadMessages, loadSnapshot, savedHermesEndpoint, setActiveHermesEndpoint, setProfileGroups, setServerRequestHandler, type LiveMessage, type LiveProfile, type LiveSession, type LiveUsage } from './hermes'
 import { reconcileMessages, TURN_SILENCE_MS } from './chat-reconcile'
 import { readWideLayout, saveWideLayout, WIDE_QUERY, type WideLayout } from './wide-layout'
+import { applyFoldState, bookColumns, FLAT, watchFoldState, type FoldState } from './fold-posture'
 import { parseClarifyQuestions } from './clarify'
 import { readNotificationPreferences, type BotActivity, type BotStage } from './bot-notifications'
 import { createNotificationSync, DEFAULT_BOT_NOTIFICATION_COLOR } from './notification-service'
@@ -556,6 +557,21 @@ export default function App() {
     }
   }, [])
 
+  // Half-folded postures (book / tabletop) are exposed to CSS on <html>, and book posture
+  // also pins the wide grid to the hinge so no column straddles the crease.
+  const [fold, setFold] = useState<FoldState>(FLAT)
+  const [viewportWidth, setViewportWidth] = useState(() => typeof window === 'undefined' ? 0 : window.innerWidth)
+  useEffect(() => watchFoldState(state => {
+    applyFoldState(state)
+    setFold(state)
+    setViewportWidth(window.innerWidth)
+  }), [])
+  useEffect(() => {
+    const read = () => setViewportWidth(window.innerWidth)
+    window.addEventListener('resize', read)
+    return () => window.removeEventListener('resize', read)
+  }, [])
+
   // Widening while on the Bots list must not show a second copy of the roster in
   // the middle pane. Open the most recently active Bot Chat instead, so the
   // tri-fold always has a real conversation in its centre.
@@ -790,12 +806,14 @@ export default function App() {
 
   // The tri-fold workspace. Every screen renders in the middle pane, so opening a
   // Bot's settings no longer collapses the layout back to a single column.
-  return <div className={`wide-shell${railCollapsed ? ' rail-collapsed' : ''}${contextCollapsed ? ' context-collapsed' : ''}`}
-    style={railWidth === null && contextWidth === null ? undefined : {
+  // Book posture: the Bots rail is the left page and the conversation the right page.
+  const bookGrid = fold.posture === 'book' && fold.hinge && !railCollapsed ? bookColumns(fold.hinge, viewportWidth) : null
+  return <div className={`wide-shell${railCollapsed ? ' rail-collapsed' : ''}${contextCollapsed || bookGrid ? ' context-collapsed' : ''}${bookGrid ? ' book-posture' : ''}`}
+    style={bookGrid ? { gridTemplateColumns: bookGrid } : railWidth === null && contextWidth === null ? undefined : {
       gridTemplateColumns: `${railCollapsed ? 0 : railWidth ?? 296}px 7px minmax(340px,1fr) 7px ${contextCollapsed ? 0 : contextWidth ?? 296}px`,
     }}>
     {railCollapsed && <button className="wide-rail-reveal" onClick={() => updateLayout({ railCollapsed: false })} aria-label="Show Bots column"><ChevronRight size={13}/></button>}
-    {contextCollapsed && <button className="wide-context-reveal" onClick={() => updateLayout({ contextCollapsed: false })} aria-label="Show computer column"><ChevronLeft size={13}/></button>}
+    {contextCollapsed && !bookGrid && <button className="wide-context-reveal" onClick={() => updateLayout({ contextCollapsed: false })} aria-label="Show computer column"><ChevronLeft size={13}/></button>}
 
     <aside className="wide-rail" aria-label="Bots">
       <header className="wide-rail-head">
