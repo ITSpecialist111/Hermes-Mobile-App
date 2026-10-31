@@ -89,14 +89,14 @@ class PhoneMcpServer(private val context: Context, private val port: Int, privat
       val message = messages.getJSONObject(i)
       if (!message.has("id") || message.isNull("id")) continue // notification: no reply
       if (message.optString("method") == "initialize") sessionHeader = UUID.randomUUID().toString()
-      replies.put(dispatch(message))
+      replies.put(dispatch(message, headers["x-hermes-bot"]))
     }
     if (replies.length() == 0) { write(output, 202, null, null); return }
     val payload = if (trimmed.startsWith("[")) replies.toString() else replies.getJSONObject(0).toString()
     write(output, 200, "application/json", payload, sessionHeader?.let { mapOf("Mcp-Session-Id" to it) } ?: emptyMap())
   } }
 
-  private fun dispatch(message: JSONObject): JSONObject {
+  private fun dispatch(message: JSONObject, bot: String?): JSONObject {
     val id = message.get("id")
     val params = message.optJSONObject("params") ?: JSONObject()
     return try {
@@ -108,7 +108,7 @@ class PhoneMcpServer(private val context: Context, private val port: Int, privat
           .put("instructions", PhoneTools.INSTRUCTIONS)
         "ping" -> JSONObject()
         "tools/list" -> JSONObject().put("tools", tools.definitions())
-        "tools/call" -> tools.call(params.optString("name"), params.optJSONObject("arguments") ?: JSONObject())
+        "tools/call" -> tools.call(params.optString("name"), params.optJSONObject("arguments") ?: JSONObject(), bot)
         else -> return error(id, -32601, "Method not found: ${message.optString("method")}")
       }
       JSONObject().put("jsonrpc", "2.0").put("id", id).put("result", result)

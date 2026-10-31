@@ -44,13 +44,40 @@ shopping, banking, social, travel, maps…), and only uses Chrome for general re
 covers it; "in the browser" or a named app overrides this. This is in both the phone's MCP tool
 descriptions and Pilot's SOUL (backup: `~/.hermes/profiles/pilot/SOUL.md.bak-*`).
 
+**Rules** (*Settings → Phone control → Rules*), enforced on the phone:
+- **Per app:** Autopilot / Ask / Block. Banking, wallets, password managers and authenticators are
+  blocked by default, so Bots can't open them, read their screens or act in them (links that open
+  into them are refused too). Messaging and email apps always ask. Every other app follows the
+  global Ask first switch until you choose. "Reset" returns an app to its default.
+- **Per Bot:** on or off. Each profile's phone MCP config sends `X-Hermes-Bot: <profile>`, so the
+  card says "Scout wants to…" and the timeline knows who acted (backups: `config.yaml.bak-botheader-*`).
+
+**Activity** (*Settings → Phone control → Activity*): every Bot action, newest first, with the Bot,
+the app, the outcome (Done / You declined / Blocked / Failed) and before/after screenshots. A tap is
+marked on the before image. It lives in the app's private storage: the last 300 entries or 14 days.
+Blocked apps are never captured, and repeated screen reads within a minute fold into one row.
+
+**Reply drafts** (*Settings → Phone control → Reply drafts*): grant Notification access, then switch
+on the apps to draft for (WhatsApp, Messages…). On the host, `hermes-reply-drafter` (a user service
+running `~/.hermes/bin/reply-drafter.py`, config `~/.hermes/reply-drafter.json`, default Bot `pilot`)
+polls `phone_messages` every 8 s. For each new 1:1 message it asks the Bot for a reply in your voice
+(a plain completion with its SOUL and memory, no tools, so a draft can never act on the phone) or
+`SKIP`, then calls `phone_propose_reply`. The phone shows **Send / Edit / Ignore**, on the cover
+screen too, and sends through the app's own quick reply, which works with the phone locked. Nothing is
+sent without your tap. Group chats (`"groups": true` to include), codes and messages older than 15
+minutes are skipped. Bots can also use `phone_messages` ("what did Woody say?") and `phone_reply`,
+which follows the app's rule.
+
 - **Phone locator.** The phone's IP comes from DHCP and changes (it moved from `.82` to `.131`), so
   every Bot points at `http://127.0.0.1:18765/mcp` instead: `~/.hermes/bin/phone-locator.py`, run by
   the user service `hermes-phone-locator` (`systemctl --user status hermes-phone-locator`). It pipes
   each connection to the phone's port 8765. When the phone isn't at its last address, it scans
-  `192.168.68.0/22` for the server that accepts `HERMES_PHONE_TOKEN` (about 6 s) and remembers it in
-  `~/.hermes/phone-locator.json`. Source: [phone-locator.py](./phone-locator.py). Config backups:
-  `config.yaml.bak-locator-*`.
+  `192.168.68.0/22` for the server that accepts `HERMES_PHONE_TOKEN` (about 6 s), remembers it in
+  `~/.hermes/phone-locator.json`, and backs off from 20 s to 5 min while the phone is away. Away
+  from home on WireGuard, add the tunnel range to the service's `ExecStart`
+  (`--subnet 192.168.68.0/22 --subnet <wireguard range>`), provided the host can route to WireGuard
+  peers. Source: [phone-locator.py](./phone-locator.py), [reply-drafter.py](./reply-drafter.py).
+  Config backups: `config.yaml.bak-locator-*`.
 - **Existing chats keep the instructions they started with.** Hermes freezes each chat's system
   prompt and tool list (for prompt caching), so SOUL edits and newly added MCP servers only reach
   *new* chats. That is why Scout kept saying "no connection to your phone" in a chat started before
@@ -61,8 +88,8 @@ descriptions and Pilot's SOUL (backup: `~/.hermes/profiles/pilot/SOUL.md.bak-*`)
 - If you ever change a Bot's phone URL or token, restart the dashboard as root
   (`systemctl restart hermes-dashboard`) and `systemctl --user restart hermes-gateway`: running
   gateways only add or remove MCP servers by name, so they keep the old address until restarted.
-- Phone control works only while the phone is on the home network (same LAN as the host). Away from
-  home the Bots can't reach it unless the phone and host share a Tailscale tailnet.
+- Phone control works only while the phone can reach the host: on the home Wi-Fi, or over WireGuard
+  with the tunnel range added to the locator (see above).
 - Rotating the token (Settings → Phone control → New token) revokes every Bot until each profile's
   `.env` is updated (the locator reads Pilot's `.env`; restart it too).
 - Sideloaded app on Android 13+: to toggle the service yourself, first allow *App info → ⋮ → Allow

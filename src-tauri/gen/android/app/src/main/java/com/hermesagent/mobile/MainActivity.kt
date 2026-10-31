@@ -15,9 +15,13 @@ import androidx.window.java.layout.WindowInfoTrackerCallbackAdapter
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
 import androidx.window.layout.WindowLayoutInfo
+import com.hermesagent.mobile.phone.PhoneAudit
 import com.hermesagent.mobile.phone.PhoneControlService
 import com.hermesagent.mobile.phone.PhoneControlSettings
+import com.hermesagent.mobile.phone.PhonePolicy
+import com.hermesagent.mobile.phone.ReplyDrafts
 import io.crates.keyring.Keyring
+import org.json.JSONArray
 import org.json.JSONObject
 
 class MainActivity : TauriActivity() {
@@ -119,5 +123,65 @@ class MainActivity : TauriActivity() {
 
     @JavascriptInterface
     fun rotateToken(): String = PhoneControlSettings.rotateToken(this@MainActivity)
+
+    /** Launchable apps with their effective rule and where it comes from (custom / default / global). */
+    @JavascriptInterface
+    fun policy(): String {
+      val pm = packageManager
+      val apps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+        .map { it.loadLabel(pm).toString() to it.activityInfo.packageName }
+        .distinctBy { it.second }
+        .filter { it.second != packageName }
+        .sortedBy { it.first.lowercase() }
+      val appsJson = JSONArray(apps.map { (label, pkg) ->
+        JSONObject().put("package", pkg).put("label", label)
+          .put("mode", PhonePolicy.effective(this@MainActivity, pkg, label).id)
+          .put("source", PhonePolicy.source(this@MainActivity, pkg, label).id)
+          .put("messaging", pkg in PhonePolicy.MESSAGING_PACKAGES)
+      })
+      val bots = JSONArray(PhonePolicy.bots(this@MainActivity).map { (name, allowed) -> JSONObject().put("name", name).put("allowed", allowed) })
+      return JSONObject().put("apps", appsJson).put("bots", bots).toString()
+    }
+
+    /** mode: auto | ask | block, or "" to go back to the default. */
+    @JavascriptInterface
+    fun setAppRule(pkg: String, mode: String) {
+      PhonePolicy.setAppRule(this@MainActivity, pkg, PhonePolicy.Mode.of(mode))
+    }
+
+    @JavascriptInterface
+    fun setBotAllowed(name: String, allowed: Boolean) {
+      PhonePolicy.setBotAllowed(this@MainActivity, name, allowed)
+      PhoneControlService.instance?.noteAction(if (allowed) "$name may use the phone" else "$name is blocked from the phone")
+    }
+
+    @JavascriptInterface
+    fun audit(limit: Int): String = PhoneAudit.list(this@MainActivity, limit.coerceIn(1, 300)).toString()
+
+    @JavascriptInterface
+    fun auditImage(id: String, which: String): String = id.toLongOrNull()?.let { PhoneAudit.imageDataUrl(this@MainActivity, it, which) }.orEmpty()
+
+    @JavascriptInterface
+    fun clearAudit() { PhoneAudit.clear(this@MainActivity) }
+
+    @JavascriptInterface
+    fun drafts(): String {
+      val pm = packageManager
+      val installed = PhonePolicy.MESSAGING_PACKAGES.mapNotNull { pkg ->
+        runCatching { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() }.getOrNull()?.let { pkg to it }
+      }.sortedBy { it.second.lowercase() }
+      val enabled = ReplyDrafts.enabledApps(this@MainActivity)
+      return ReplyDrafts.status(this@MainActivity)
+        .put("available", JSONArray(installed.map { (pkg, label) -> JSONObject().put("package", pkg).put("label", label).put("enabled", pkg in enabled) }))
+        .toString()
+    }
+
+    @JavascriptInterface
+    fun setDraftApp(pkg: String, enabled: Boolean) { ReplyDrafts.setAppEnabled(this@MainActivity, pkg, enabled) }
+
+    @JavascriptInterface
+    fun openNotificationAccess() {
+      startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
   }
 }

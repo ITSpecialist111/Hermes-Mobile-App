@@ -57,9 +57,35 @@ class PhoneTools(private val service: PhoneControlService) {
       props("url" to prop("string", "The http or https URL.")), listOf("url")))
     .put(tool("phone_wait", "Wait for the screen to settle (page loads, animations), then return the element list.",
       props("seconds" to prop("number", "Seconds to wait, 0.5 to 10 (default 2)."))))
+    .put(tool("phone_messages", "Recent incoming messages from messaging apps (WhatsApp, Messages…), read from their notifications: id, app, conversation, sender, text, recent history and whether a quick reply is possible. Use it to see what someone said without opening the app.",
+      props("since_id" to prop("integer", "Only messages newer than this id."), "app" to prop("string", "Optional app name or package filter."), "for_drafting" to prop("boolean", "Only apps the user enabled for reply drafts."))))
+    .put(tool("phone_reply", "Send a reply to an incoming message through the app's own quick-reply (no screen tapping; works with the phone locked). The phone applies the user's rules: it may ask them first.",
+      props("message_id" to prop("integer", "Id from phone_messages."), "text" to prop("string", "The reply to send.")), listOf("message_id", "text")))
+    .put(tool("phone_propose_reply", "Show the user a drafted reply to an incoming message as a notification with Send / Edit / Ignore. Nothing is sent unless they tap Send. Use this for reply drafts.",
+      props("message_id" to prop("integer", "Id from phone_messages."), "text" to prop("string", "The drafted reply, written as the user.")), listOf("message_id", "text")))
 
-  fun call(name: String, args: JSONObject): JSONObject = synchronized(lock) {
-    try {
+  /** The Bot behind the current call (X-Hermes-Bot header), for rules, cards and the timeline. */
+  @Volatile private var bot = "Hermes"
+  /** Set by a check that stopped the action, so the timeline can say why. */
+  private var outcomeOverride: String? = null
+  private var lastSummary: String? = null
+  private var tapPoint: Pair<Float, Float>? = null
+  /** The app an action concerns when it is not the foreground one (replies go to the messaging app). */
+  private var auditPkg: String? = null
+
+  fun call(name: String, args: JSONObject, botHeader: String? = null): JSONObject = synchronized(lock) {
+    bot = PhonePolicy.botName(botHeader)
+    PhonePolicy.noteBot(service, bot)
+    outcomeOverride = null; lastSummary = null; tapPoint = null; auditPkg = null
+    val pkgBefore = foregroundPackage()
+    if (!PhonePolicy.botAllowed(service, bot)) {
+      val result = failure("The user has turned off phone access for $bot. Do not try again; tell them it is switched off in Hermes Mobile \u2192 Settings \u2192 Phone control.")
+      PhoneAudit.record(service, bot, name, pkgBefore, appLabel(pkgBefore), "tried to use the phone ($name)", "blocked")
+      return result
+    }
+    val acting = name in ACTING_TOOLS
+    val before = if (acting && canCapture(pkgBefore)) captureBitmap() else null
+    val result = try {
       when (name) {
         "phone_screen" -> screen(args.optBoolean("screenshot", true))
         "phone_tap" -> tap(args)
@@ -70,23 +96,68 @@ class PhoneTools(private val service: PhoneControlService) {
         "phone_list_apps" -> text(listApps(args.optString("filter")))
         "phone_open_url" -> openUrl(args.optString("url"))
         "phone_wait" -> { Thread.sleep((args.optDouble("seconds", 2.0).coerceIn(0.5, 10.0) * 1000).toLong()); text(describe()) }
+        "phone_messages" -> messages(args)
+        "phone_reply" -> reply(args)
+        "phone_propose_reply" -> proposeReply(args)
         else -> failure("Unknown tool: $name")
       }
     } catch (error: Exception) {
       failure(error.message ?: error.toString())
     }
+    val failed = result.optBoolean("isError")
+    val outcome = outcomeOverride ?: if (failed) "failed" else "done"
+    // Empty message polls (the reply drafter checks every few seconds) would bury real actions.
+    val quietPoll = name == "phone_messages" && outcome == "done" && lastSummary == null
+    if (!quietPoll && (acting || outcome != "done" || name in AUDITED_READS)) {
+      val pkgAfter = foregroundPackage() ?: pkgBefore
+      val after = if (acting && outcome == "done" && canCapture(pkgAfter)) captureBitmap() else null
+      val marked = before?.let { image -> tapPoint?.let { (x, y) -> PhoneAudit.markTap(image, x, y) } ?: image }
+      val summary = lastSummary ?: if (failed) "$name failed: ${resultText(result).take(140)}" else name.removePrefix("phone_").replace('_', ' ')
+      val pkg = auditPkg ?: pkgBefore
+      runCatching { PhoneAudit.record(service, bot, name, pkg, appLabel(pkg), summary, outcome, marked, after) }
+    }
+    result
   }
+
+  private fun resultText(result: JSONObject) = result.optJSONArray("content")?.optJSONObject(0)?.optString("text").orEmpty()
 
   // ── reading the screen ─────────────────────────────────────────────────────
 
   private fun screen(withScreenshot: Boolean): JSONObject {
+    val pkg = foregroundPackage()
+    if (PhonePolicy.effective(service, pkg, appLabel(pkg)) == PhonePolicy.Mode.BLOCK) {
+      outcomeOverride = "blocked"
+      lastSummary = "tried to read the screen of ${appLabel(pkg) ?: pkg}"
+      return text("Foreground app: ${appLabel(pkg) ?: pkg} \u2014 blocked for Bots by the user, so its screen is hidden. " +
+        "Press home (phone_key) or open another app; do not try to work in this one.")
+    }
     val content = JSONArray().put(JSONObject().put("type", "text").put("text", describe()))
     if (withScreenshot) {
       screenshotJpeg()?.let { content.put(JSONObject().put("type", "image").put("mimeType", "image/jpeg").put("data", it)) }
         ?: content.put(JSONObject().put("type", "text").put("text", "(Screenshot unavailable on this screen — use the element list.)"))
     }
-    service.noteAction("read the screen")
+    service.noteAction("$bot read the screen")
+    lastSummary = "read the screen"
     return JSONObject().put("content", content).put("isError", false)
+  }
+
+  private fun foregroundPackage(): String? = service.rootInActiveWindow?.packageName?.toString()?.takeIf { it != service.packageName }
+
+  private fun appLabel(pkg: String?): String? = pkg?.let {
+    runCatching { service.packageManager.getApplicationLabel(service.packageManager.getApplicationInfo(it, 0)).toString() }.getOrNull()
+  }
+
+  /** Screens of blocked apps are never captured, not even for the timeline. */
+  private fun canCapture(pkg: String?) = PhonePolicy.effective(service, pkg, appLabel(pkg)) != PhonePolicy.Mode.BLOCK
+
+  /** Acting in a blocked app is refused before anything happens; returns the refusal, or null to go ahead. */
+  private fun refuseIfBlocked(what: String): JSONObject? {
+    val pkg = foregroundPackage() ?: return null
+    if (PhonePolicy.effective(service, pkg, appLabel(pkg)) != PhonePolicy.Mode.BLOCK) return null
+    outcomeOverride = "blocked"
+    lastSummary = "tried to $what in ${appLabel(pkg) ?: pkg}"
+    service.noteAction("blocked $bot: $what in ${appLabel(pkg) ?: pkg}")
+    return failure("${appLabel(pkg) ?: pkg} is blocked for Bots by the user. Do not act in it; press home or tell them what you need.")
   }
 
   /** Numbered list of the elements an agent can act on, across the visible app and keyboard windows. */
@@ -100,10 +171,11 @@ class PhoneTools(private val service: PhoneControlService) {
     val metrics = service.resources.displayMetrics
     val app = service.rootInActiveWindow?.packageName ?: "unknown"
     lines.append("Foreground app: $app · screen ${metrics.widthPixels}x${metrics.heightPixels} px\n")
-    lines.append(if (PhoneControlSettings.askFirst(service))
-      "Confirmation: ask-first — the phone itself asks the user before risky taps (send, post, pay, delete…); just act, and it reports if they decline.\n"
-    else
-      "Confirmation: autopilot — the user lets you act without asking.\n")
+    lines.append(when (PhonePolicy.effective(service, app.toString(), appLabel(app.toString()))) {
+      PhonePolicy.Mode.AUTO -> "Confirmation here: autopilot — the user lets you act in this app without asking.\n"
+      PhonePolicy.Mode.ASK -> "Confirmation here: ask-first — the phone itself asks the user before risky taps and sends (send, post, pay, delete…); just act, and it reports if they decline.\n"
+      PhonePolicy.Mode.BLOCK -> "This app is blocked for Bots: do not act in it.\n"
+    })
     for ((label, root) in roots) {
       lines.append("— $label —\n")
       walk(root, collected, lines)
@@ -161,8 +233,13 @@ class PhoneTools(private val service: PhoneControlService) {
     for (i in 0 until node.childCount) node.getChild(i)?.let { walk(it, out, lines, depth + 1) }
   }
 
-  private fun screenshotJpeg(): String? {
+  @Volatile private var lastShot: Pair<Long, Bitmap>? = null
+
+  /** One screenshot, shared by the Bot's view and the timeline. Android rate-limits accessibility
+   *  screenshots (~3/s), so a capture from the last moment is reused instead of failing. */
+  private fun captureBitmap(): Bitmap? {
     if (Build.VERSION.SDK_INT < 30) return null
+    lastShot?.let { (at, image) -> if (System.currentTimeMillis() - at < 400) return image }
     val latch = CountDownLatch(1)
     var bitmap: Bitmap? = null
     service.takeScreenshot(Display.DEFAULT_DISPLAY, service.mainExecutor, object : AccessibilityService.TakeScreenshotCallback {
@@ -175,7 +252,11 @@ class PhoneTools(private val service: PhoneControlService) {
       override fun onFailure(errorCode: Int) { latch.countDown() }
     })
     latch.await(5, TimeUnit.SECONDS)
-    val full = bitmap ?: return null
+    return bitmap?.also { lastShot = System.currentTimeMillis() to it }
+  }
+
+  private fun screenshotJpeg(): String? {
+    val full = captureBitmap() ?: return null
     // Keep the image small enough for a vision model: longest side ~1000 px.
     val scale = 1000f / max(full.width, full.height)
     val scaled = if (scale < 1f) Bitmap.createScaledBitmap(full, (full.width * scale).roundToInt(), (full.height * scale).roundToInt(), true) else full
@@ -193,6 +274,7 @@ class PhoneTools(private val service: PhoneControlService) {
   }
 
   private fun tap(args: JSONObject): JSONObject {
+    refuseIfBlocked("tap")?.let { return it }
     val longPress = args.optBoolean("long_press", false)
     val target = element(args)
     val verb = if (longPress) "press and hold" else "tap"
@@ -200,7 +282,9 @@ class PhoneTools(private val service: PhoneControlService) {
     if (target != null) {
       target.node.refresh()
       val clickable = clickableAncestor(target.node, longPress)
-      confirmRisky(verb, labelOf(target.node, clickable))?.let { return it }
+      val targetLabel = labelOf(target.node, clickable)
+      tapPoint = target.bounds.exactCenterX() to target.bounds.exactCenterY()
+      confirmRisky(verb, targetLabel)?.let { return it }
       target.node.refresh(); clickable?.refresh()
       val action = if (longPress) AccessibilityNodeInfo.ACTION_LONG_CLICK else AccessibilityNodeInfo.ACTION_CLICK
       // Chrome can report ACTION_CLICK on web content as handled without dispatching it, so web
@@ -209,16 +293,18 @@ class PhoneTools(private val service: PhoneControlService) {
       val done = if (webPoint != null) { gestureTap(webPoint.first, webPoint.second, longPress); true }
         else clickable?.performAction(action) == true
       if (!done) gestureTap(target.bounds.centerX().toFloat(), target.bounds.centerY().toFloat(), longPress)
-      label = "${if (longPress) "held" else "tapped"} element ${args.getInt("element")}"
+      label = "${if (longPress) "held" else "tapped"} \u201c${targetLabel.shown.ifEmpty { "element ${args.getInt("element")}" }.take(60)}\u201d"
     } else {
       if (!args.has("x") || !args.has("y")) throw IllegalArgumentException("Give an element number or x and y.")
       val x = args.getInt("x"); val y = args.getInt("y")
+      tapPoint = x.toFloat() to y.toFloat()
       // A coordinate tap is judged by the element under the point, so it cannot bypass Ask first.
       if (elements.isEmpty()) describe()
       val hit = elements.filter { it.bounds.contains(x, y) }.minByOrNull { it.bounds.width().toLong() * it.bounds.height() }
-      if (hit != null) confirmRisky(verb, labelOf(hit.node, clickableAncestor(hit.node, longPress)))?.let { return it }
+      val hitLabel = hit?.let { labelOf(it.node, clickableAncestor(it.node, longPress)) }
+      if (hitLabel != null) confirmRisky(verb, hitLabel)?.let { return it }
       gestureTap(x.toFloat(), y.toFloat(), longPress)
-      label = "${if (longPress) "held" else "tapped"} ($x,$y)"
+      label = "${if (longPress) "held" else "tapped"} ${hitLabel?.shown?.takeIf { it.isNotEmpty() }?.let { "\u201c${it.take(60)}\u201d" } ?: "($x,$y)"}"
     }
     return acted(label)
   }
@@ -244,15 +330,18 @@ class PhoneTools(private val service: PhoneControlService) {
     return Label(shown, join(visible + ids))
   }
 
-  /** In Ask-first mode a risky action waits for Allow on the phone; returns a failure result if denied. */
+  /** Where the app's rule says ask, a risky action waits for Allow on the phone; returns a failure result if denied. */
   private fun confirmRisky(verb: String, label: Label, detail: String = ""): JSONObject? {
-    if (!PhoneControlSettings.askFirst(service) || !PhoneConfirmation.isRisky(label.all)) return null
+    val pkg = foregroundPackage()
+    if (PhonePolicy.effective(service, pkg, appLabel(pkg)) != PhonePolicy.Mode.ASK || !PhoneConfirmation.isRisky(label.all)) return null
     val app = foregroundAppName()
     val what = label.shown.ifEmpty { "an unlabelled control" }
-    service.noteAction("waiting for you to allow: $verb \u201c$what\u201d")
-    val allowed = PhoneConfirmation.ask(service, "Hermes wants to $verb \u201c${what.take(60)}\u201d${if (app != null) " in $app" else ""}", detail.ifBlank { pendingText() })
+    service.noteAction("waiting for you to allow $bot: $verb \u201c$what\u201d")
+    val allowed = PhoneConfirmation.ask(service, "$bot wants to $verb \u201c${what.take(60)}\u201d${if (app != null) " in $app" else ""}", detail.ifBlank { pendingText() })
     if (allowed) return null
-    service.noteAction("you declined: $verb \u201c$what\u201d")
+    service.noteAction("you declined $bot: $verb \u201c$what\u201d")
+    outcomeOverride = "declined"
+    lastSummary = "$verb \u201c${what.take(60)}\u201d \u2014 you declined"
     return failure("The user declined this on the phone (or did not answer within 60 seconds): $verb \u201c$what\u201d. Do not retry it; tell them what you were about to do and ask how to proceed.")
   }
 
@@ -299,6 +388,7 @@ class PhoneTools(private val service: PhoneControlService) {
   }
 
   private fun type(args: JSONObject): JSONObject {
+    refuseIfBlocked("type")?.let { return it }
     val text = args.getString("text")
     val node = element(args)?.node?.also { it.refresh() }
       ?: service.rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
@@ -318,10 +408,11 @@ class PhoneTools(private val service: PhoneControlService) {
       Thread.sleep(250)
       submitted = if (Build.VERSION.SDK_INT >= 30 && node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)) " and submitted" else " (submit not supported here — tap the send/search button)"
     }
-    return acted("typed ${text.length} characters$submitted")
+    return acted("typed \u201c${text.take(60)}${if (text.length > 60) "\u2026" else ""}\u201d$submitted")
   }
 
   private fun swipe(args: JSONObject): JSONObject {
+    refuseIfBlocked("swipe")?.let { return it }
     val metrics = service.resources.displayMetrics
     val area = element(args)?.bounds ?: Rect(0, 0, metrics.widthPixels, metrics.heightPixels)
     val (x1, y1, x2, y2) = if (args.has("x1") && args.has("y1") && args.has("x2") && args.has("y2")) {
@@ -360,7 +451,13 @@ class PhoneTools(private val service: PhoneControlService) {
 
   private fun listApps(filter: String): String {
     val apps = launchables().filter { filter.isEmpty() || it.first.contains(filter, true) || it.second.contains(filter, true) }.sortedBy { it.first.lowercase() }
-    return if (apps.isEmpty()) "No launchable apps match \"$filter\"." else apps.joinToString("\n") { "${it.first} (${it.second})" }
+    return if (apps.isEmpty()) "No launchable apps match \"$filter\"." else apps.joinToString("\n") { (label, pkg) ->
+      when (PhonePolicy.effective(service, pkg, label)) {
+        PhonePolicy.Mode.BLOCK -> "$label ($pkg) \u2014 blocked for Bots"
+        PhonePolicy.Mode.ASK -> "$label ($pkg) \u2014 asks before sending"
+        PhonePolicy.Mode.AUTO -> "$label ($pkg)"
+      }
+    }
   }
 
   private fun openApp(name: String): JSONObject {
@@ -370,6 +467,12 @@ class PhoneTools(private val service: PhoneControlService) {
       ?: apps.firstOrNull { it.first.equals(name, true) }
       ?: apps.firstOrNull { it.first.contains(name, true) }
       ?: throw IllegalArgumentException("No installed app matches \"$name\". Use phone_list_apps.")
+    if (PhonePolicy.effective(service, match.second, match.first) == PhonePolicy.Mode.BLOCK) {
+      outcomeOverride = "blocked"
+      lastSummary = "tried to open ${match.first}"
+      service.noteAction("blocked $bot: open ${match.first}")
+      return failure("${match.first} is blocked for Bots by the user. Do not open it; tell them what you need instead.")
+    }
     val intent = service.packageManager.getLaunchIntentForPackage(match.second)
       ?: throw IllegalStateException("${match.first} cannot be launched.")
     service.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED))
@@ -380,9 +483,73 @@ class PhoneTools(private val service: PhoneControlService) {
   private fun openUrl(url: String): JSONObject {
     val uri = Uri.parse(url.trim())
     if (uri.scheme != "http" && uri.scheme != "https") throw IllegalArgumentException("Only http and https links can be opened.")
-    service.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    val intent = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    // A link can open straight into an app (a bank's domain into its app), so the target app's rule applies.
+    val target = service.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName
+    if (target != null && target != "android" && PhonePolicy.effective(service, target, appLabel(target)) == PhonePolicy.Mode.BLOCK) {
+      outcomeOverride = "blocked"
+      lastSummary = "tried to open ${uri.host} in ${appLabel(target) ?: target}"
+      return failure("That link opens ${appLabel(target) ?: target}, which is blocked for Bots by the user.")
+    }
+    service.startActivity(intent)
     Thread.sleep(1500)
     return acted("opened ${uri.host}")
+  }
+
+  // ── messages and replies ───────────────────────────────────────────────────
+
+  private fun messages(args: JSONObject): JSONObject {
+    if (!PhoneMessages.accessGranted(service)) {
+      return failure("Message reading is off: the user has not given Hermes Mobile notification access (Settings \u2192 Phone control \u2192 Reply drafts).")
+    }
+    val filter = args.optString("app").trim()
+    val pkgs = if (args.optBoolean("for_drafting", false)) ReplyDrafts.enabledApps(service) else null
+    val found = PhoneMessages.list(args.optLong("since_id", 0), pkgs)
+      .filter { filter.isEmpty() || it.appLabel.contains(filter, true) || it.pkg.contains(filter, true) }
+      .filter { PhonePolicy.effective(service, it.pkg, it.appLabel) != PhonePolicy.Mode.BLOCK }
+    if (found.isNotEmpty()) lastSummary = "read ${found.size} new message${if (found.size == 1) "" else "s"}${found.map { it.sender }.distinct().take(3).joinToString(prefix = " from ", separator = ", ")}"
+    return text(JSONObject().put("messages", JSONArray(found.takeLast(30).map { it.json() })).toString())
+  }
+
+  private fun message(args: JSONObject): PhoneMessages.Incoming =
+    (PhoneMessages.get(args.optLong("message_id", -1)) ?: throw IllegalArgumentException("No message with that id on the phone; call phone_messages again."))
+      .also { auditPkg = it.pkg }
+
+  private fun reply(args: JSONObject): JSONObject {
+    val message = message(args)
+    val replyText = args.optString("text").trim()
+    if (replyText.isEmpty()) throw IllegalArgumentException("Give the reply text.")
+    when (PhonePolicy.effective(service, message.pkg, message.appLabel)) {
+      PhonePolicy.Mode.BLOCK -> {
+        outcomeOverride = "blocked"; lastSummary = "tried to reply to ${message.sender} in ${message.appLabel}"
+        return failure("${message.appLabel} is blocked for Bots by the user.")
+      }
+      PhonePolicy.Mode.ASK -> {
+        val allowed = PhoneConfirmation.ask(service, "$bot wants to reply to ${message.sender} in ${message.appLabel}", "Text: \u201c${replyText.take(200)}\u201d")
+        if (!allowed) {
+          outcomeOverride = "declined"; lastSummary = "reply to ${message.sender}: \u201c${replyText.take(80)}\u201d \u2014 you declined"
+          return failure("The user declined sending this reply to ${message.sender}. Do not retry; ask them how to proceed.")
+        }
+      }
+      PhonePolicy.Mode.AUTO -> Unit
+    }
+    PhoneMessages.reply(service, message.id, replyText)?.let { return failure(it) }
+    lastSummary = "replied to ${message.sender} in ${message.appLabel}: \u201c${replyText.take(80)}\u201d"
+    service.noteAction("$bot replied to ${message.sender}")
+    return text("Sent to ${message.sender} in ${message.appLabel}.")
+  }
+
+  private fun proposeReply(args: JSONObject): JSONObject {
+    val message = message(args)
+    val replyText = args.optString("text").trim()
+    if (replyText.isEmpty()) throw IllegalArgumentException("Give the drafted reply.")
+    if (PhonePolicy.effective(service, message.pkg, message.appLabel) == PhonePolicy.Mode.BLOCK) {
+      outcomeOverride = "blocked"
+      return failure("${message.appLabel} is blocked for Bots by the user.")
+    }
+    ReplyDrafts.propose(service, message, replyText, bot)
+    lastSummary = "drafted a reply to ${message.sender} in ${message.appLabel}: \u201c${replyText.take(80)}\u201d"
+    return text("Draft shown to the user with Send / Edit / Ignore. Nothing is sent unless they tap Send.")
   }
 
   private fun gestureTap(x: Float, y: Float, longPress: Boolean) =
@@ -405,7 +572,8 @@ class PhoneTools(private val service: PhoneControlService) {
 
   /** Every action reports what changed: a short settle, then the refreshed element list. */
   private fun acted(summary: String): JSONObject {
-    service.noteAction(summary)
+    lastSummary = summary
+    service.noteAction("$bot $summary")
     Thread.sleep(700)
     return text("Done: $summary.\n\n${describe()}")
   }
@@ -430,10 +598,15 @@ class PhoneTools(private val service: PhoneControlService) {
 
   companion object {
     private const val MAX_ELEMENTS = 160
+    /** Actions that change something; they get before/after screenshots in the timeline. */
+    /** Non-acting calls that still belong in the timeline. */
+    private val AUDITED_READS = setOf("phone_screen", "phone_messages", "phone_reply", "phone_propose_reply")
+    private val ACTING_TOOLS = setOf("phone_tap", "phone_type", "phone_swipe", "phone_key", "phone_open_app", "phone_open_url")
     const val INSTRUCTIONS = "Tools to operate the user's Android phone (a Galaxy Z Fold7). Start with phone_screen, act by element number, " +
       "and read the refreshed element list each action returns. Coordinates are screen pixels. App first: when a task involves a " +
       "service (messaging, shopping, banking, social, travel, maps, streaming…), check phone_list_apps and use the installed app; use the " +
       "browser for general web research or when no app covers it. Never type passwords and stop if a screen asks for credentials. " +
-      "phone_screen states the confirmation mode: in ask-first mode the phone asks the user before risky taps, so just act."
+      "phone_screen states the rule for the current app: ask-first means the phone asks the user before risky taps and sends, so just act; " +
+      "blocked apps are off limits. For messages use phone_messages (read) and phone_reply / phone_propose_reply (no screen tapping needed)."
   }
 }

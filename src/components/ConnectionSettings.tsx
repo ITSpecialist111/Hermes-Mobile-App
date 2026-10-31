@@ -211,7 +211,7 @@ export function ConnectionSettings({ profiles, botProfiles, sessions, connected,
     }
   }
   if (page === 'about') return <AboutHermesMobile back={() => setPage('root')}/>
-  if (page === 'phone') return <PhoneControlSettings back={() => setPage('root')}/>
+  if (page === 'phone') return <PhoneControlSettings back={() => setPage('root')} profiles={botProfiles}/>
   if (page === 'notifications') return <NotificationsSettings back={() => setPage('root')} profiles={botProfiles}/>
   if (page === 'pairing') return <PairingSettings back={() => setPage('root')} onPaired={onPaired} onPairingBusy={onPairingBusy} initialEndpoint={endpoint}/>
   const displayEndpoint = endpoint?.replace(/^https?:\/\//, '')

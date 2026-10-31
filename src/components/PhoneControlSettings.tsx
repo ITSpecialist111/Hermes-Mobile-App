@@ -2,18 +2,38 @@ import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, Copy, RefreshCw, Smartphone, SmartphoneNfc } from 'lucide-react'
 
 import { useEdgeSwipeBack } from '../edge-swipe'
-import { hermesMcpSnippet, openAccessibilitySettings, phoneControlAvailable, readPhoneControlStatus, rotatePhoneControlToken, setPhoneControlAskFirst, type PhoneControlStatus } from '../phone-control'
+import type { LiveProfile } from '../hermes'
+import { hermesMcpSnippet, openAccessibilitySettings, phoneControlAvailable, readPhoneAudit, readPhoneControlStatus, readPhonePolicy, readReplyDrafts, rotatePhoneControlToken, setPhoneControlAskFirst, type PhoneControlStatus } from '../phone-control'
+import { PhoneActivityPage, PhoneRulesPage, ReplyDraftsPage } from './PhoneControlPages'
 
 /**
  * Settings → Phone control. Android only lets the user switch an accessibility service on, so
  * this screen explains what it grants, opens the right system page, and shows the address and
  * token a Hermes host needs. Status is re-read whenever the app returns to the foreground.
  */
-export function PhoneControlSettings({ back }: { back: () => void }) {
+export function PhoneControlSettings({ back, profiles = [] }: { back: () => void; profiles?: LiveProfile[] }) {
+  const [page, setPage] = useState<'main' | 'rules' | 'drafts' | 'activity'>('main')
+  if (page === 'rules') return <PhoneRulesPage back={() => setPage('main')} profiles={profiles}/>
+  if (page === 'drafts') return <ReplyDraftsPage back={() => setPage('main')} profiles={profiles}/>
+  if (page === 'activity') return <PhoneActivityPage back={() => setPage('main')} profiles={profiles}/>
+  return <PhoneControlMain back={back} open={setPage}/>
+}
+
+function PhoneControlMain({ back, open }: { back: () => void; open: (page: 'rules' | 'drafts' | 'activity') => void }) {
   const shellRef = useRef<HTMLElement>(null)
   useEdgeSwipeBack(shellRef, back)
   const [status, setStatus] = useState<PhoneControlStatus | null>(() => readPhoneControlStatus())
   const [hint, setHint] = useState('')
+  const [summary] = useState(() => {
+    const policy = readPhonePolicy()
+    const drafts = readReplyDrafts()
+    const activity = readPhoneAudit(50)
+    return {
+      blocked: policy.apps.filter(app => app.mode === 'block').length,
+      drafts: drafts?.access ? drafts.apps.length : -1,
+      latest: activity[0],
+    }
+  })
 
   useEffect(() => {
     const read = () => setStatus(readPhoneControlStatus())
@@ -51,6 +71,9 @@ export function PhoneControlSettings({ back }: { back: () => void }) {
           setHint(next ? 'Ask first is on: the phone asks you before Bots send, post, pay or delete.' : 'Autopilot is on: Bots act without asking. Turn Ask first back on at any time.')
         }
       }}>Ask first <span className={`capability-toggle ${status.askFirst ? 'on' : ''}`}><i/>{status.askFirst ? 'ON' : 'OFF'}</span></button>}
+      <button onClick={() => open('rules')}>Rules <span>{summary.blocked ? `${summary.blocked} blocked ›` : '›'}</span></button>
+      <button onClick={() => open('drafts')}>Reply drafts <span>{summary.drafts < 0 ? 'Off ›' : summary.drafts ? `${summary.drafts} app${summary.drafts === 1 ? '' : 's'} ›` : 'Off ›'}</span></button>
+      <button onClick={() => open('activity')}>Activity <span>{summary.latest ? `${new Date(summary.latest.at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })} ›` : '›'}</span></button>
     </section>}
 
     {available && status && <p className="phone-control-mode">{status.askFirst

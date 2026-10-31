@@ -18,6 +18,7 @@ import './edge-swipe.css'
 // Native-feel interaction layer: must load last so it refines every surface.
 import './motion.css'
 import './fold.css'
+import './phone-control.css'
 import './approval.css'
 
 // One capture-phase listener gives every control in the app its tactile

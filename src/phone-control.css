@@ -1,0 +1,39 @@
+/* Settings → Phone control → Rules / Reply drafts / Activity */
+.phone-control-screen{overflow-y:auto}
+.phone-rules-heading{margin:18px 18px 8px;color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.phone-rule-bot{display:inline-flex;align-items:center;gap:10px;min-width:0}
+
+.phone-rule-search{display:flex;align-items:center;gap:8px;margin:0 16px 8px;padding:9px 12px;border:1px solid var(--border);border-radius:12px;background:var(--surface);color:var(--muted)}
+.phone-rule-search input{flex:1;min-width:0;border:0;background:transparent;color:var(--text);font:inherit;outline:none}
+.phone-rule-search button{display:grid;place-items:center;border:0;background:transparent;color:var(--muted);padding:2px}
+
+.phone-rule-list{display:flex;flex-direction:column;padding:0 12px 12px}
+.phone-rule-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px 10px;padding:11px 6px;border-bottom:1px solid color-mix(in srgb,var(--border) 60%,transparent)}
+.phone-rule-app{display:flex;flex-direction:column;min-width:0}
+.phone-rule-app b{overflow:hidden;font-size:14px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
+.phone-rule-app small{color:var(--muted);font-size:11.5px}
+.phone-rule-modes{display:inline-flex;padding:2px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+.phone-rule-modes button{display:inline-flex;align-items:center;gap:4px;padding:5px 8px;border:0;border-radius:8px;background:transparent;color:var(--muted);font:600 11.5px/1 inherit}
+.phone-rule-modes button.selected{background:var(--text);color:var(--bg)}
+.phone-rule-row.mode-block .phone-rule-modes button.selected{background:#e5534b;color:#fff}
+.phone-rule-row.mode-ask .phone-rule-modes button.selected{background:#f0a43a;color:#16120a}
+.phone-rule-reset{grid-column:1 / -1;justify-self:start;padding:0;border:0;background:transparent;color:var(--muted);font-size:11.5px;text-decoration:underline}
+/* Narrow columns (the Fold7 inner screen beside a chat) keep just the icons. */
+@container (max-width:380px){.phone-rule-modes button span{display:none}}
+@media (max-width:400px){.phone-rule-modes button span{display:none}}
+
+.phone-audit-day{padding:0 12px}
+.phone-audit-row{border-bottom:1px solid color-mix(in srgb,var(--border) 60%,transparent)}
+.phone-audit-main{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center;gap:10px;width:100%;padding:10px 6px;border:0;background:transparent;color:var(--text);font:inherit;text-align:left}
+.phone-audit-copy{min-width:0;font-size:13.5px;line-height:1.35}
+.phone-audit-copy b{font-weight:650}
+.phone-audit-copy small{display:block;margin-top:2px;color:var(--muted);font-size:11.5px}
+.phone-audit-badge{display:inline-flex;align-items:center;gap:3px;padding:3px 7px;border-radius:999px;background:color-mix(in srgb,var(--text) 10%,transparent);color:var(--muted);font-size:11px;font-weight:600;white-space:nowrap}
+.phone-audit-badge.outcome-done{color:#5fd39a;background:rgba(95,211,154,.12)}
+.phone-audit-badge.outcome-declined{color:#f0a43a;background:rgba(240,164,58,.14)}
+.phone-audit-badge.outcome-blocked,.phone-audit-badge.outcome-failed{color:#ef7a73;background:rgba(229,83,75,.14)}
+.phone-audit-shots{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 6px 14px}
+.phone-audit-shots figure{margin:0}
+.phone-audit-shots img{display:block;width:100%;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+.phone-audit-shots figcaption{margin-top:4px;color:var(--muted);font-size:11px;text-align:center}
+.menu-list button .phone-rule-bot{color:var(--text);font:inherit}

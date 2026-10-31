@@ -6,7 +6,9 @@ port 8765. When the phone is not at its last known address (DHCP gave it a new I
 scanned for a server that accepts the phone's token, and that address is remembered. The token
 is only used to recognise the phone; requests themselves pass through untouched.
 
-Usage: phone-locator.py [--subnet 192.168.68.0/22] [--env ~/.hermes/profiles/pilot/.env]
+Usage: phone-locator.py [--subnet 192.168.68.0/22] [--subnet 10.8.0.0/24 ...] [--env ~/.hermes/profiles/pilot/.env]
+
+Give --subnet more than once to also search a VPN range (e.g. WireGuard peers away from home).
 """
 import argparse
 import asyncio
@@ -31,11 +33,13 @@ def read_token(env_path: Path) -> str:
 
 
 class Locator:
-    def __init__(self, subnet: str, token: str):
-        self.subnet = ipaddress.ip_network(subnet, strict=False)
+    def __init__(self, subnets: list[str], token: str):
+        self.subnets = [ipaddress.ip_network(subnet, strict=False) for subnet in subnets]
         self.token = token
         self.lock = asyncio.Lock()
         self.last_scan = 0.0
+        # While the phone is away, rescans back off from 20 s to 5 min; finding it resets this.
+        self.backoff = 20.0
         try:
             self.ip = json.loads(STATE.read_text()).get("ip")
         except (OSError, ValueError):
@@ -72,7 +76,7 @@ class Locator:
             writer.close()
 
     async def scan(self) -> str | None:
-        hosts = [str(h) for h in self.subnet.hosts()]
+        hosts = [str(h) for subnet in self.subnets for h in subnet.hosts()]
         gate = asyncio.Semaphore(256)
 
         async def probe(ip: str) -> str | None:
@@ -92,15 +96,17 @@ class Locator:
         async with self.lock:
             if self.ip and await self.is_phone(self.ip):  # another connection may have just rescanned
                 return self.ip
-            if time.monotonic() - self.last_scan < 20:  # phone is away: don't rescan on every retry
+            if time.monotonic() - self.last_scan < self.backoff:  # phone is away: don't rescan on every retry
                 return None
             self.last_scan = time.monotonic()
-            log.info("phone not at %s; scanning %s", self.ip, self.subnet)
+            log.info("phone not at %s; scanning %s", self.ip, ", ".join(map(str, self.subnets)))
             ip = await self.scan()
             if ip:
                 self.remember(ip)
+                self.backoff = 20.0
             else:
-                log.info("phone not found on %s (off Wi-Fi or phone control off)", self.subnet)
+                self.backoff = min(self.backoff * 2, 300.0)
+                log.info("phone not found on %s (away without VPN, or phone control off)", ", ".join(map(str, self.subnets)))
             return ip
 
 
@@ -117,11 +123,11 @@ async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> No
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--subnet", default="192.168.68.0/22")
+    parser.add_argument("--subnet", action="append", help="LAN or VPN range to search (repeatable)")
     parser.add_argument("--env", default="~/.hermes/profiles/pilot/.env")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    locator = Locator(args.subnet, read_token(Path(os.path.expanduser(args.env))))
+    locator = Locator(args.subnet or ["192.168.68.0/22"], read_token(Path(os.path.expanduser(args.env))))
 
     async def handle(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
         ip = await locator.target()

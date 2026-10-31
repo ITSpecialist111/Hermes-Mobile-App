@@ -97,7 +97,7 @@ object PhoneConfirmation {
       text = detail; setTextColor(Color.parseColor("#D0D3DC")); setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f); setPadding(0, dp(6), 0, 0)
     })
     card.addView(TextView(service).apply {
-      text = "Turn off \u201cAsk first\u201d in Hermes Mobile \u2192 Settings \u2192 Phone control for autopilot."
+      text = "Change what asks in Hermes Mobile \u2192 Settings \u2192 Phone control \u2192 Rules."
       setTextColor(Color.parseColor("#8A8FA0")); setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f); setPadding(0, dp(8), 0, 0)
     })
     val row = LinearLayout(service).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END; setPadding(0, dp(12), 0, 0) }

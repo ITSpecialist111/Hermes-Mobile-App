@@ -73,6 +73,102 @@ export function phoneControlSummary(status: PhoneControlStatus | null): string {
   return `On · ${status.askFirst ? 'Ask first' : 'Autopilot'}`
 }
 
+// ── Rules, Bots, Activity and Reply drafts ──────────────────────────────────
+
+export type PhoneRuleMode = 'auto' | 'ask' | 'block'
+export type PhoneAppRule = { package: string; label: string; mode: PhoneRuleMode; source: 'custom' | 'default' | 'global'; messaging: boolean }
+export type PhoneBotRule = { name: string; allowed: boolean }
+export type PhoneAuditEntry = {
+  id: number
+  at: number
+  bot: string
+  tool: string
+  app: string | null
+  appLabel: string | null
+  summary: string
+  outcome: 'done' | 'declined' | 'blocked' | 'failed'
+  before: boolean
+  after: boolean
+  count: number
+}
+export type ReplyDraftStatus = { access: boolean; apps: string[]; lastIncomingAt: number; available: { package: string; label: string; enabled: boolean }[] }
+
+type PolicyBridge = {
+  policy?(): string
+  setAppRule?(pkg: string, mode: string): void
+  setBotAllowed?(name: string, allowed: boolean): void
+  audit?(limit: number): string
+  auditImage?(id: string, which: string): string
+  clearAudit?(): void
+  drafts?(): string
+  setDraftApp?(pkg: string, enabled: boolean): void
+  openNotificationAccess?(): void
+}
+
+const policyBridge = (): PolicyBridge | null => (bridge() as PolicyBridge | null)
+
+const asArray = (value: unknown): Record<string, unknown>[] => Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => !!item && typeof item === 'object') : []
+const parseJson = (raw: unknown): unknown => { if (typeof raw !== 'string') return null; try { return JSON.parse(raw) } catch { return null } }
+const MODES: PhoneRuleMode[] = ['auto', 'ask', 'block']
+const OUTCOMES: PhoneAuditEntry['outcome'][] = ['done', 'declined', 'blocked', 'failed']
+
+export function parsePhonePolicy(raw: unknown): { apps: PhoneAppRule[]; bots: PhoneBotRule[] } {
+  const value = parseJson(raw) as { apps?: unknown; bots?: unknown } | null
+  const apps = asArray(value?.apps).flatMap(item => typeof item.package === 'string' ? [{
+    package: item.package,
+    label: typeof item.label === 'string' ? item.label : item.package,
+    // Unknown modes fall back to the safe side: ask.
+    mode: MODES.includes(item.mode as PhoneRuleMode) ? item.mode as PhoneRuleMode : 'ask',
+    source: item.source === 'custom' || item.source === 'default' ? item.source : 'global',
+    messaging: item.messaging === true,
+  } satisfies PhoneAppRule] : [])
+  const bots = asArray(value?.bots).flatMap(item => typeof item.name === 'string' ? [{ name: item.name, allowed: item.allowed !== false }] : [])
+  return { apps, bots }
+}
+
+export function parsePhoneAudit(raw: unknown): PhoneAuditEntry[] {
+  return asArray(parseJson(raw)).flatMap(item => typeof item.id === 'number' && typeof item.at === 'number' ? [{
+    id: item.id,
+    at: item.at,
+    bot: typeof item.bot === 'string' ? item.bot : 'Hermes',
+    tool: typeof item.tool === 'string' ? item.tool : '',
+    app: typeof item.app === 'string' ? item.app : null,
+    appLabel: typeof item.appLabel === 'string' ? item.appLabel : null,
+    summary: typeof item.summary === 'string' ? item.summary : '',
+    outcome: OUTCOMES.includes(item.outcome as PhoneAuditEntry['outcome']) ? item.outcome as PhoneAuditEntry['outcome'] : 'done',
+    before: item.before === true,
+    after: item.after === true,
+    count: typeof item.count === 'number' ? item.count : 1,
+  }] : [])
+}
+
+export function parseReplyDrafts(raw: unknown): ReplyDraftStatus | null {
+  const value = parseJson(raw) as Record<string, unknown> | null
+  if (!value) return null
+  return {
+    access: value.access === true,
+    apps: Array.isArray(value.apps) ? value.apps.filter((item): item is string => typeof item === 'string') : [],
+    lastIncomingAt: typeof value.lastIncomingAt === 'number' ? value.lastIncomingAt : 0,
+    available: asArray(value.available).flatMap(item => typeof item.package === 'string' ? [{ package: item.package, label: typeof item.label === 'string' ? item.label : item.package, enabled: item.enabled === true }] : []),
+  }
+}
+
+const call = <T>(fn: (native: PolicyBridge) => T, fallback: T): T => {
+  const native = policyBridge()
+  if (!native) return fallback
+  try { return fn(native) } catch { return fallback }
+}
+
+export const readPhonePolicy = () => call(native => parsePhonePolicy(native.policy?.()), { apps: [], bots: [] })
+export const setPhoneAppRule = (pkg: string, mode: PhoneRuleMode | null) => call(native => { native.setAppRule?.(pkg, mode ?? ''); return true }, false)
+export const setPhoneBotAllowed = (name: string, allowed: boolean) => call(native => { native.setBotAllowed?.(name, allowed); return true }, false)
+export const readPhoneAudit = (limit = 200) => call(native => parsePhoneAudit(native.audit?.(limit)), [] as PhoneAuditEntry[])
+export const readPhoneAuditImage = (id: number, which: 'before' | 'after') => call(native => native.auditImage?.(String(id), which) || null, null as string | null)
+export const clearPhoneAudit = () => call(native => { native.clearAudit?.(); return true }, false)
+export const readReplyDrafts = () => call(native => parseReplyDrafts(native.drafts?.()), null as ReplyDraftStatus | null)
+export const setReplyDraftApp = (pkg: string, enabled: boolean) => call(native => { native.setDraftApp?.(pkg, enabled); return true }, false)
+export const openNotificationAccess = () => call(native => { native.openNotificationAccess?.(); return true }, false)
+
 /** The Hermes config a host needs to reach this phone; the token belongs in the profile's .env. */
 export function hermesMcpSnippet(status: PhoneControlStatus, server = 'phone'): string {
   return [
