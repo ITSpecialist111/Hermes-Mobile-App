@@ -28,6 +28,7 @@ import { navDirectionFor, setNavDirection } from './nav-direction'
 import { haptic } from './haptics'
 import { connectAndSubmit, createGroup, createProfile, interruptSession, loadMessages, loadSnapshot, savedHermesEndpoint, setActiveHermesEndpoint, setProfileGroups, setServerRequestHandler, storedSessionForLiveId, type LiveMessage, type LiveProfile, type LiveSession, type LiveUsage } from './hermes'
 import { reconcileMessages, TURN_SILENCE_MS } from './chat-reconcile'
+import { BotMoodContext, idleMood, liveMood, type BotMood } from './bot-mood'
 import { fitWideColumns, readWideLayout, saveWideLayout, THREE_COLUMN_MIN, WIDE_QUERY, type WideLayout } from './wide-layout'
 import { applyFoldState, bookColumns, FLAT, watchFoldState, type FoldState } from './fold-posture'
 import { createApprovalBroker, type ApprovalChoice, type ApprovalRequest } from './approvals'
@@ -97,6 +98,8 @@ export default function App() {
   const settledAssistantRef = useRef<SettledAssistantState | null>(null)
   settledAssistantRef.current = settledAssistant
   const [sending, setSending] = useState(false)
+  // The Bot whose turn just finished well, for a moment of happy eyes.
+  const [happyProfile, setHappyProfile] = useState<string | null>(null)
   const sendingRef = useRef(false)
   sendingRef.current = sending
   // When the host last sent ANY event for the running turn. A stream that stops emitting is
@@ -347,6 +350,7 @@ export default function App() {
     const localUserMessage = { id: -Date.now(), role: 'user' as const, content: attachmentSummary(text, attachmentRefs) }
     setSettledAssistant(null)
     setError('')
+    setHappyProfile(null)
     setSending(true)
     setStreaming('')
     setToolActivities([])
@@ -377,6 +381,7 @@ export default function App() {
         if (type === 'error') setError(String(payload.message || 'Hermes could not complete that request.'))
       })
       if (!isCurrentTurn()) return false
+      setHappyProfile(turnSession.profile)
       const terminalAssistant = settleAssistantResponse(turnSession.id, turnSession.profile, finalText, completionUsage)
       if (terminalAssistant) {
         setSettledAssistant(terminalAssistant)
@@ -622,6 +627,44 @@ export default function App() {
     return profile?.display_name || (profileName ? titleize(profileName) : 'Hermes')
   }, [sessions, profiles, selected])
 
+  // Bot faces: the open conversation's Bot shows what its turn is doing; the rest idle.
+  useEffect(() => {
+    if (!happyProfile) return
+    const timer = window.setTimeout(() => setHappyProfile(null), 3600)
+    return () => window.clearTimeout(timer)
+  }, [happyProfile])
+  const botMoods = useMemo(() => {
+    const moods: Record<string, BotMood> = {}
+    const latest = new Map<string, { lastActive?: number; unread: boolean }>()
+    for (const session of sessions) {
+      const seen = latest.get(session.profile)
+      latest.set(session.profile, {
+        lastActive: Math.max(seen?.lastActive ?? 0, session.last_active ?? 0) || undefined,
+        unread: Boolean(seen?.unread || session.unread),
+      })
+    }
+    for (const profile of profiles) {
+      const seen = latest.get(profile.name)
+      moods[profile.name] = idleMood(seen?.lastActive, seen?.unread ?? false)
+    }
+    for (const approval of approvals) {
+      const storedId = approval.sessionId ? storedSessionForLiveId(approval.sessionId) ?? approval.sessionId : null
+      const profileName = (storedId ? sessions.find(item => item.id === storedId)?.profile : undefined) ?? (storedId && selected?.id === storedId ? selected.profile : undefined)
+      if (profileName) moods[profileName] = 'waiting'
+    }
+    if (selected && moods[selected.profile] !== 'waiting') {
+      moods[selected.profile] = liveMood({
+        sending,
+        streaming: Boolean(streaming),
+        runningTools: toolActivities.filter(item => item.status === 'running').map(item => item.name),
+        approvalPending: Boolean(clarifyParams),
+        error: Boolean(error),
+        justFinished: happyProfile === selected.profile,
+      }) ?? 'idle'
+    }
+    return moods
+  }, [sessions, profiles, approvals, selected, sending, streaming, toolActivities, clarifyParams, error, happyProfile])
+
   // Allow once / Deny tapped on the notification (shade, lock screen, cover screen).
   useEffect(() => {
     let unsubscribe = () => {}
@@ -826,7 +869,7 @@ export default function App() {
 
   const screen = newChatOpen ? newChatView : newGroupOpen ? newGroupView : createOpen ? wizardView : settings ? settingsView : profileView ?? groupView ?? chatView ?? (tab === 'tasks' ? tasksView : homeView)
 
-  if (!wide) return approvalSheet ? <>{screen}{approvalSheet}</> : screen
+  if (!wide) return <BotMoodContext.Provider value={botMoods}>{screen}{approvalSheet}</BotMoodContext.Provider>
 
   const activeProfile = selected ? profiles.find(profile => profile.name === selected.profile) : undefined
   const activeBotName = activeProfile?.display_name || (selected?.title && selected.title !== 'Bot Chat' ? selected.title : selected ? titleize(selected.profile) : '')
@@ -872,7 +915,7 @@ export default function App() {
   const showRail = () => updateLayout(columns.railAutoHidden || (viewportWidth < THREE_COLUMN_MIN && !contextCollapsed)
     ? { railCollapsed: false, contextCollapsed: true }
     : { railCollapsed: false })
-  return <div className={`wide-shell${columns.railHidden ? ' rail-collapsed' : ''}${columns.contextHidden || bookGrid ? ' context-collapsed' : ''}${bookGrid ? ' book-posture' : ''}`}
+  return <BotMoodContext.Provider value={botMoods}><div className={`wide-shell${columns.railHidden ? ' rail-collapsed' : ''}${columns.contextHidden || bookGrid ? ' context-collapsed' : ''}${bookGrid ? ' book-posture' : ''}`}
     style={{ gridTemplateColumns: bookGrid ?? columns.template }}>
     {columns.railHidden && <button className="wide-rail-reveal" onClick={showRail} aria-label="Show Bots column"><ChevronRight size={13}/></button>}
     {contextCollapsed && !bookGrid && <button className="wide-context-reveal" onClick={() => updateLayout({ contextCollapsed: false })} aria-label="Show computer column"><ChevronLeft size={13}/></button>}
@@ -913,7 +956,7 @@ export default function App() {
       </> : <p className="wide-context-empty">Open a Bot to see its computer and routines.</p>}
     </aside>
     {approvalSheet}
-  </div>
+  </div></BotMoodContext.Provider>
 }
 
 function Notice({ message, retry }: { message: string; retry: () => void }) {
