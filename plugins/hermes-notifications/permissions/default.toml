@@ -9,7 +9,6 @@ permissions = [
   "allow-clear",
   "allow-clearAll",
   "allow-approval",
-  "allow-clearApproval",
   "allow-register-listener",
   "allow-remove-listener",
 ]

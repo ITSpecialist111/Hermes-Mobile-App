@@ -85,7 +85,9 @@ export function postApprovalNotification(approval: ApprovalNotification): Promis
 }
 
 export function clearApprovalNotification(requestId: string): Promise<unknown> {
-  return call('clearApproval', { id: requestId })
+  // Approval notifications are keyed `approval:<request_id>` natively, so the ordinary clear
+  // command removes them (and goes through the Rust layer that unwraps `payload`).
+  return call('clear', { id: `approval:${requestId}` })
 }
 
 export type ApprovalAction = { requestId: string; choice: string }

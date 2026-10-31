@@ -357,13 +357,6 @@ class HermesNotificationsPlugin(private val activity: android.app.Activity) : Pl
     invoke.resolve(JSObject().apply { put("ok", true) })
   }
 
-  @Command
-  fun clearApproval(invoke: Invoke) {
-    val args = invoke.parseArgs(IdArgs::class.java)
-    manager.cancel(notificationId("approval:${args.id}"))
-    invoke.resolve(JSObject().apply { put("ok", true) })
-  }
-
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
     val requestId = intent.getStringExtra(EXTRA_APPROVAL_REQUEST) ?: return

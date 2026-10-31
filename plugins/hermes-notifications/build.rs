@@ -7,7 +7,6 @@ const COMMANDS: &[&str] = &[
   "clear",
   "clearAll",
   "approval",
-  "clearApproval",
   "register_listener",
   "remove_listener",
 ];

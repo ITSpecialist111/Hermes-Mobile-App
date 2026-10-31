@@ -12,7 +12,6 @@ Default permissions for the Hermes notifications plugin
 - `allow-clear`
 - `allow-clearAll`
 - `allow-approval`
-- `allow-clearApproval`
 - `allow-register-listener`
 - `allow-remove-listener`
 
@@ -99,32 +98,6 @@ Enables the clearAll command without any pre-configured scope.
 <td>
 
 Denies the clearAll command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`hermes-notifications:allow-clearApproval`
-
-</td>
-<td>
-
-Enables the clearApproval command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`hermes-notifications:deny-clearApproval`
-
-</td>
-<td>
-
-Denies the clearApproval command without any pre-configured scope.
 
 </td>
 </tr>

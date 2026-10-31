@@ -43,8 +43,4 @@ impl<R: Runtime> HermesNotifications<R> {
   pub fn approval(&self, _payload: ApprovalRequest) -> crate::Result<OkResponse> {
     Ok(OkResponse { ok: false })
   }
-
-  pub fn clear_approval(&self, _payload: IdRequest) -> crate::Result<OkResponse> {
-    Ok(OkResponse { ok: false })
-  }
 }
