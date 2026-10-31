@@ -10,7 +10,7 @@ import type { ServerRequest, ServerRequestReply } from './gateway'
 export type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
 
 export type ApprovalRequest = {
-  serverRequestId: number
+  serverRequestId: number | string
   /** The approval queue's own id; notification actions answer by it. */
   requestId: string | null
   sessionId: string | null
@@ -59,10 +59,10 @@ type Entry = { request: ApprovalRequest; resolve: (reply: ServerRequestReply) =>
  * a notification action, or the host withdrawing it (`request.cancel`).
  */
 export function createApprovalBroker(onChange: (pending: ApprovalRequest[]) => void) {
-  const entries = new Map<number, Entry>()
+  const entries = new Map<number | string, Entry>()
   const emit = () => onChange([...entries.values()].map(entry => entry.request))
 
-  const settle = (serverRequestId: number, choice: ApprovalChoice): boolean => {
+  const settle = (serverRequestId: number | string, choice: ApprovalChoice): boolean => {
     const entry = entries.get(serverRequestId)
     if (!entry) return false
     entries.delete(serverRequestId)
@@ -81,7 +81,7 @@ export function createApprovalBroker(onChange: (pending: ApprovalRequest[]) => v
         emit()
       })
     },
-    answer(serverRequestId: number, choice: ApprovalChoice): boolean {
+    answer(serverRequestId: number | string, choice: ApprovalChoice): boolean {
       const entry = entries.get(serverRequestId)
       if (!entry || !entry.request.choices.includes(choice)) return false
       return settle(serverRequestId, choice)

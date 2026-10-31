@@ -133,6 +133,37 @@ describe('gateway server requests', () => {
     socket.onclose?.()
     await flush()
     expect(broker.pending()).toHaveLength(0)
-    expect(socket.sent).toHaveLength(0)
+    expect(socket.sent.map(line => JSON.parse(line)).filter(frame => frame.id === 43)).toHaveLength(0)
+  })
+
+  it('answers a request carrying a Hermes string id ("srq-…") with that same id', async () => {
+    const { client, socket } = await connectedClient()
+    const broker = createApprovalBroker(() => {})
+    client.setRequestHandler(req => broker.handle(req))
+    socket.receive({ jsonrpc: '2.0', id: 'srq-2b82b5f6bbed', method: 'approval', params: { session_id: 'f69355c7', request_id: 'r9', command: 'rm -rf ./x', allow_permanent: true, allow_session: true } })
+    await flush()
+    expect(broker.pending()).toHaveLength(1)
+    expect(broker.answer('srq-2b82b5f6bbed', 'once')).toBe(true)
+    await flush()
+    expect(socket.sent.map(line => JSON.parse(line))).toContainEqual({ jsonrpc: '2.0', id: 'srq-2b82b5f6bbed', result: { choice: 'once' } })
+  })
+
+  it('withdraws a string-id request on request.cancel', async () => {
+    const { client, socket } = await connectedClient()
+    const broker = createApprovalBroker(() => {})
+    client.setRequestHandler(req => broker.handle(req))
+    socket.receive({ jsonrpc: '2.0', id: 'srq-cancel-me', method: 'approval', params: { session_id: 's' } })
+    await flush()
+    socket.receive({ jsonrpc: '2.0', method: 'event', params: { type: 'request.cancel', session_id: 's', payload: { id: 'srq-cancel-me', method: 'approval', reason: 'resolved' } } })
+    await flush()
+    expect(broker.pending()).toHaveLength(0)
+    expect(socket.sent.filter(line => JSON.parse(line).id === 'srq-cancel-me')).toHaveLength(0)
+  })
+
+  it('advertises that it answers server requests as soon as the gateway is ready', async () => {
+    const { socket } = await connectedClient()
+    const frames = socket.sent.map(line => JSON.parse(line))
+    expect(frames).toHaveLength(1)
+    expect(frames[0]).toMatchObject({ jsonrpc: '2.0', method: 'client.capabilities', params: { server_requests: true } })
   })
 })
