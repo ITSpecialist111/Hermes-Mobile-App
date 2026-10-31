@@ -50,4 +50,12 @@ impl<R: Runtime> HermesNotifications<R> {
   pub fn clear_all(&self) -> crate::Result<OkResponse> {
     self.0.run_mobile_plugin("clearAll", ()).map_err(Into::into)
   }
+
+  pub fn approval(&self, payload: ApprovalRequest) -> crate::Result<OkResponse> {
+    self.0.run_mobile_plugin("approval", payload).map_err(Into::into)
+  }
+
+  pub fn clear_approval(&self, payload: IdRequest) -> crate::Result<OkResponse> {
+    self.0.run_mobile_plugin("clearApproval", payload).map_err(Into::into)
+  }
 }

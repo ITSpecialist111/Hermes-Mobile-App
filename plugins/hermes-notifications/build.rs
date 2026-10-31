@@ -6,6 +6,10 @@ const COMMANDS: &[&str] = &[
   "finish",
   "clear",
   "clearAll",
+  "approval",
+  "clearApproval",
+  "register_listener",
+  "remove_listener",
 ];
 
 fn main() {

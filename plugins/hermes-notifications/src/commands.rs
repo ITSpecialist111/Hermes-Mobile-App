@@ -33,3 +33,13 @@ pub(crate) async fn clear<R: Runtime>(app: AppHandle<R>, payload: IdRequest) -> 
 pub(crate) async fn clear_all<R: Runtime>(app: AppHandle<R>) -> Result<OkResponse> {
   app.hermes_notifications().clear_all()
 }
+
+#[command]
+pub(crate) async fn approval<R: Runtime>(app: AppHandle<R>, payload: ApprovalRequest) -> Result<OkResponse> {
+  app.hermes_notifications().approval(payload)
+}
+
+#[command]
+pub(crate) async fn clear_approval<R: Runtime>(app: AppHandle<R>, payload: IdRequest) -> Result<OkResponse> {
+  app.hermes_notifications().clear_approval(payload)
+}

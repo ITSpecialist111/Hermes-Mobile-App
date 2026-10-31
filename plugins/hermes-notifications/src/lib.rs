@@ -41,7 +41,9 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
       commands::upsert,
       commands::finish,
       commands::clear,
-      commands::clear_all
+      commands::clear_all,
+      commands::approval,
+      commands::clear_approval
     ])
     .setup(|app, api| {
       #[cfg(mobile)]

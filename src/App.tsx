@@ -30,6 +30,9 @@ import { connectAndSubmit, createGroup, createProfile, interruptSession, loadMes
 import { reconcileMessages, TURN_SILENCE_MS } from './chat-reconcile'
 import { readWideLayout, saveWideLayout, WIDE_QUERY, type WideLayout } from './wide-layout'
 import { applyFoldState, bookColumns, FLAT, watchFoldState, type FoldState } from './fold-posture'
+import { createApprovalBroker, type ApprovalChoice, type ApprovalRequest } from './approvals'
+import { ApprovalSheet } from './components/ApprovalSheet'
+import { clearApprovalNotification, listenForApprovalActions, postApprovalNotification } from './notification-service'
 import { parseClarifyQuestions } from './clarify'
 import { readNotificationPreferences, type BotActivity, type BotStage } from './bot-notifications'
 import { createNotificationSync, DEFAULT_BOT_NOTIFICATION_COLOR } from './notification-service'
@@ -589,8 +592,13 @@ export default function App() {
   // own clarify timeout, so anything unanswerable is refused immediately instead.
   const clarifyResolverRef = useRef<((reply: { result: unknown }) => void) | null>(null)
   const [clarifyParams, setClarifyParams] = useState<unknown | null>(null)
+  // Dangerous-command approvals. Refusing them (the old "method not found") made the host
+  // withdraw the approval and fail the command, so the phone answers them itself.
+  const [approvals, setApprovals] = useState<ApprovalRequest[]>([])
+  const [approvalBroker] = useState(() => createApprovalBroker(setApprovals))
   useEffect(() => {
     setServerRequestHandler(request => {
+      if (request.method === 'approval') return approvalBroker.handle(request)
       if (request.method !== 'clarify') {
         return Promise.resolve({ error: { code: -32601, message: `Method not found: ${request.method}` } })
       }
@@ -601,7 +609,53 @@ export default function App() {
       })
     })
     return () => setServerRequestHandler(undefined)
-  }, [])
+  }, [approvalBroker])
+
+  const approvalBotName = useCallback((approval: ApprovalRequest) => {
+    const session = approval.sessionId ? sessions.find(item => item.id === approval.sessionId) : undefined
+    const profileName = session?.profile ?? (approval.sessionId && selected?.id === approval.sessionId ? selected.profile : undefined)
+    const profile = profileName ? profiles.find(item => item.name === profileName) : undefined
+    return profile?.display_name || (profileName ? titleize(profileName) : 'Hermes')
+  }, [sessions, profiles, selected])
+
+  // Allow once / Deny tapped on the notification (shade, lock screen, cover screen).
+  useEffect(() => {
+    let unsubscribe = () => {}
+    let disposed = false
+    void listenForApprovalActions(({ requestId, choice }) => {
+      if (choice === 'once' || choice === 'deny') approvalBroker.answerByRequestId(requestId, choice)
+    }).then(stop => { if (disposed) stop(); else unsubscribe = stop })
+    return () => { disposed = true; unsubscribe() }
+  }, [approvalBroker])
+
+  // A waiting approval is surfaced as a notification only while the app is not on screen,
+  // and withdrawn the moment it is answered anywhere.
+  const notifiedApprovalsRef = useRef(new Set<string>())
+  useEffect(() => {
+    const sync = () => {
+      const notified = notifiedApprovalsRef.current
+      const live = new Set(approvals.map(item => item.requestId).filter((id): id is string => !!id))
+      for (const id of [...notified]) {
+        if (!live.has(id)) { notified.delete(id); void clearApprovalNotification(id) }
+      }
+      if (document.visibilityState === 'visible') return
+      for (const approval of approvals) {
+        if (!approval.requestId || notified.has(approval.requestId)) continue
+        notified.add(approval.requestId)
+        void postApprovalNotification({ requestId: approval.requestId, bot: approvalBotName(approval), command: approval.command, description: approval.description })
+      }
+    }
+    sync()
+    document.addEventListener('visibilitychange', sync)
+    return () => document.removeEventListener('visibilitychange', sync)
+  }, [approvals, approvalBotName])
+
+  const answerApproval = useCallback((approval: ApprovalRequest, choice: ApprovalChoice) => {
+    approvalBroker.answer(approval.serverRequestId, choice)
+  }, [approvalBroker])
+  const approvalSheet = approvals[0]
+    ? <ApprovalSheet key={approvals[0].serverRequestId} approval={approvals[0]} botName={approvalBotName(approvals[0])} waiting={approvals.length - 1} onAnswer={choice => answerApproval(approvals[0], choice)}/>
+    : null
 
   const answerClarify = useCallback((result: unknown) => {
     clarifyResolverRef.current?.({ result })
@@ -768,7 +822,7 @@ export default function App() {
 
   const screen = newChatOpen ? newChatView : newGroupOpen ? newGroupView : createOpen ? wizardView : settings ? settingsView : profileView ?? groupView ?? chatView ?? (tab === 'tasks' ? tasksView : homeView)
 
-  if (!wide) return screen
+  if (!wide) return approvalSheet ? <>{screen}{approvalSheet}</> : screen
 
   const activeProfile = selected ? profiles.find(profile => profile.name === selected.profile) : undefined
   const activeBotName = activeProfile?.display_name || (selected?.title && selected.title !== 'Bot Chat' ? selected.title : selected ? titleize(selected.profile) : '')
@@ -842,6 +896,7 @@ export default function App() {
         <BotCapabilities profileName={selected.profile} onOpenSettings={() => setProfileSheet(true)} onUpdated={() => void refresh()}/>
       </> : <p className="wide-context-empty">Open a Bot to see its computer and routines.</p>}
     </aside>
+    {approvalSheet}
   </div>
 }
 
