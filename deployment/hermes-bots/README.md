@@ -90,8 +90,12 @@ which follows the app's rule.
   gateways only add or remove MCP servers by name, so they keep the old address until restarted.
 - Phone control works only while the phone can reach the host: on the home Wi-Fi, or over WireGuard
   with the tunnel range added to the locator (see above).
-- Rotating the token (Settings → Phone control → New token) revokes every Bot until each profile's
-  `.env` is updated (the locator reads Pilot's `.env`; restart it too).
+- Rotating the token (Settings → Phone control → New token) revokes every Bot at once. The phone
+  then answers 401, and the locator logs "rejected the token". To recover: put the new token in
+  `HERMES_PHONE_TOKEN` in every profile's `.env`, then `systemctl --user restart hermes-phone-locator
+  hermes-reply-drafter hermes-gateway`, and restart the dashboard (as root `systemctl restart
+  hermes-dashboard`). Running Hermes processes keep the old token in memory until restarted.
+  This happened on 2 Nov (backups: `.env.bak-token-*`).
 - Sideloaded app on Android 13+: to toggle the service yourself, first allow *App info → ⋮ → Allow
   restricted settings* for Hermes Mobile.
 

@@ -40,6 +40,8 @@ class Locator:
         self.last_scan = 0.0
         # While the phone is away, rescans back off from 20 s to 5 min; finding it resets this.
         self.backoff = 20.0
+        # A phone that answers but refuses the token (it was rotated with New token on the phone).
+        self.rejected_by: str | None = None
         try:
             self.ip = json.loads(STATE.read_text()).get("ip")
         except (OSError, ValueError):
@@ -69,6 +71,8 @@ class Locator:
                 if not chunk:
                     break
                 reply += chunk
+            if reply.startswith(b"HTTP/1.1 401"):
+                self.rejected_by = ip
             return reply.startswith(b"HTTP/1.1 200") and b'"jsonrpc"' in reply
         except (OSError, asyncio.TimeoutError):
             return False
@@ -99,6 +103,7 @@ class Locator:
             if time.monotonic() - self.last_scan < self.backoff:  # phone is away: don't rescan on every retry
                 return None
             self.last_scan = time.monotonic()
+            self.rejected_by = None
             log.info("phone not at %s; scanning %s", self.ip, ", ".join(map(str, self.subnets)))
             ip = await self.scan()
             if ip:
@@ -106,7 +111,11 @@ class Locator:
                 self.backoff = 20.0
             else:
                 self.backoff = min(self.backoff * 2, 300.0)
-                log.info("phone not found on %s (away without VPN, or phone control off)", ", ".join(map(str, self.subnets)))
+                if self.rejected_by:
+                    log.warning("the phone at %s rejected the token: it was probably rotated (Settings -> Phone control -> New token). "
+                                "Put the new token in each Bot's HERMES_PHONE_TOKEN and restart this service and Hermes.", self.rejected_by)
+                else:
+                    log.info("phone not found on %s (away without VPN, or phone control off)", ", ".join(map(str, self.subnets)))
             return ip
 
 
