@@ -1,0 +1,26 @@
+[
+  {
+    "id": "specialists",
+    "capabilities": [
+      { "id": "research.analyst", "kind": "specialist", "connection": "hermes-agents", "description": "Temporary web researcher: answers one question with cited sources, then retires." },
+      { "id": "market.analyst", "kind": "specialist", "connection": "hermes-agents", "description": "Temporary product analyst: price, total cost, subscriptions and availability for a UK household." },
+      { "id": "security.analyst", "kind": "specialist", "connection": "hermes-agents", "description": "Temporary device-security analyst: update support, default passwords, vulnerability disclosure, cloud dependence." },
+      { "id": "compliance.reviewer", "kind": "specialist", "connection": "hermes-agents", "description": "Shared regulatory and compliance reviewer: UK data protection, product security and household policy. Never approves spending or certifies compliance." },
+      { "id": "household.steward", "kind": "specialist", "connection": "hermes-agents", "description": "Persistent evidence steward: keeps the household decision record across missions." },
+      { "id": "reply.drafter", "kind": "specialist", "connection": "hermes-agents", "description": "Temporary reply drafter: drafts one message reply in Graham's voice; never sends." }
+    ]
+  },
+  {
+    "id": "household",
+    "capabilities": [
+      { "id": "household.policy", "kind": "tool", "connection": "household-library", "description": "Look up the household's own rules (purchases, cameras, messaging, retention). Zero model calls." }
+    ]
+  },
+  {
+    "id": "phone",
+    "capabilities": [
+      { "id": "phone.messages", "kind": "tool", "connection": "phone-mcp", "description": "Read recent incoming message notifications from the phone (read-only)." },
+      { "id": "phone.send", "kind": "tool", "connection": "phone-mcp", "description": "Send a message from the phone. Declared so it can be refused: no mission or binding grants it." }
+    ]
+  }
+]

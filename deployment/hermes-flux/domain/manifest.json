@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "hermes-home",
+  "packIds": ["specialists", "household", "phone"],
+  "missions": {
+    "research": ["research.analyst"],
+    "compliance-review": ["household.policy", "compliance.reviewer"],
+    "purchase-review": ["market.analyst", "security.analyst", "household.policy", "household.steward"],
+    "steward-log": ["household.steward"],
+    "reply-draft": ["reply.drafter"],
+    "inbox-brief": ["phone.messages"]
+  }
+}

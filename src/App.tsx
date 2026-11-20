@@ -26,9 +26,15 @@ import { isActiveChatTurn } from './chat-turn'
 import { errorMessage, RequestEpoch, selectRestoredEndpoint } from './connection-state'
 import { navDirectionFor, setNavDirection } from './nav-direction'
 import { haptic } from './haptics'
-import { connectAndSubmit, createGroup, createProfile, interruptSession, loadMessages, loadSnapshot, savedHermesEndpoint, setActiveHermesEndpoint, setProfileGroups, setServerRequestHandler, type LiveMessage, type LiveProfile, type LiveSession, type LiveUsage } from './hermes'
+import { connectAndSubmit, createGroup, createProfile, interruptSession, loadMessages, loadSnapshot, savedHermesEndpoint, setActiveHermesEndpoint, setProfileGroups, setServerRequestHandler, storedSessionForLiveId, type LiveMessage, type LiveProfile, type LiveSession, type LiveUsage } from './hermes'
 import { reconcileMessages, TURN_SILENCE_MS } from './chat-reconcile'
-import { readWideLayout, saveWideLayout, WIDE_QUERY, type WideLayout } from './wide-layout'
+import { BotMoodContext, idleMood, liveMood, type BotMood } from './bot-mood'
+import { fitWideColumns, readWideLayout, saveWideLayout, THREE_COLUMN_MIN, WIDE_QUERY, type WideLayout } from './wide-layout'
+import { applyFoldState, bookColumns, FLAT, watchFoldState, type FoldState } from './fold-posture'
+import { createApprovalBroker, type ApprovalChoice, type ApprovalRequest } from './approvals'
+import { ApprovalSheet } from './components/ApprovalSheet'
+import { clearApprovalNotification, listenForApprovalActions, postApprovalNotification } from './notification-service'
+import { decideFluxApproval, FLUX_REQUEST_PREFIX, watchFluxApprovals } from './flux'
 import { parseClarifyQuestions } from './clarify'
 import { readNotificationPreferences, type BotActivity, type BotStage } from './bot-notifications'
 import { createNotificationSync, DEFAULT_BOT_NOTIFICATION_COLOR } from './notification-service'
@@ -93,6 +99,8 @@ export default function App() {
   const settledAssistantRef = useRef<SettledAssistantState | null>(null)
   settledAssistantRef.current = settledAssistant
   const [sending, setSending] = useState(false)
+  // The Bot whose turn just finished well, for a moment of happy eyes.
+  const [happyProfile, setHappyProfile] = useState<string | null>(null)
   const sendingRef = useRef(false)
   sendingRef.current = sending
   // When the host last sent ANY event for the running turn. A stream that stops emitting is
@@ -343,6 +351,7 @@ export default function App() {
     const localUserMessage = { id: -Date.now(), role: 'user' as const, content: attachmentSummary(text, attachmentRefs) }
     setSettledAssistant(null)
     setError('')
+    setHappyProfile(null)
     setSending(true)
     setStreaming('')
     setToolActivities([])
@@ -373,6 +382,7 @@ export default function App() {
         if (type === 'error') setError(String(payload.message || 'Hermes could not complete that request.'))
       })
       if (!isCurrentTurn()) return false
+      setHappyProfile(turnSession.profile)
       const terminalAssistant = settleAssistantResponse(turnSession.id, turnSession.profile, finalText, completionUsage)
       if (terminalAssistant) {
         setSettledAssistant(terminalAssistant)
@@ -506,7 +516,7 @@ export default function App() {
   // launches. The default hides the right column, so the conversation gets the space until the
   // pane is asked for; a stored choice always beats that default.
   const [layout, setLayout] = useState<WideLayout>(() => readWideLayout())
-  const { railCollapsed, contextCollapsed, railWidth, contextWidth } = layout
+  const { railCollapsed, contextCollapsed } = layout
   const updateLayout = useCallback((patch: Partial<WideLayout>) => {
     setLayout(current => {
       const next = { ...current, ...patch }
@@ -518,6 +528,9 @@ export default function App() {
   // The New Bot control is a menu, not a button: creating a Bot and starting a fresh chat
   // with an existing one are the two things a user means by "new" here.
   const [newBotMenuOpen, setNewBotMenuOpen] = useState(false)
+  // The inner screen's Bots rail carries the same New Chat / New Bot / New group choices as
+  // the cover screen's footer, which the unfolded layout otherwise hides behind an open chat.
+  const [railMenuOpen, setRailMenuOpen] = useState(false)
   const [newChatOpen, setNewChatOpen] = useState(false)
   const [newChatBusy, setNewChatBusy] = useState(false)
   const [newChatError, setNewChatError] = useState('')
@@ -556,6 +569,21 @@ export default function App() {
     }
   }, [])
 
+  // Half-folded postures (book / tabletop) are exposed to CSS on <html>, and book posture
+  // also pins the wide grid to the hinge so no column straddles the crease.
+  const [fold, setFold] = useState<FoldState>(FLAT)
+  const [viewportWidth, setViewportWidth] = useState(() => typeof window === 'undefined' ? 0 : window.innerWidth)
+  useEffect(() => watchFoldState(state => {
+    applyFoldState(state)
+    setFold(state)
+    setViewportWidth(window.innerWidth)
+  }), [])
+  useEffect(() => {
+    const read = () => setViewportWidth(window.innerWidth)
+    window.addEventListener('resize', read)
+    return () => window.removeEventListener('resize', read)
+  }, [])
+
   // Widening while on the Bots list must not show a second copy of the roster in
   // the middle pane. Open the most recently active Bot Chat instead, so the
   // tri-fold always has a real conversation in its centre.
@@ -573,8 +601,13 @@ export default function App() {
   // own clarify timeout, so anything unanswerable is refused immediately instead.
   const clarifyResolverRef = useRef<((reply: { result: unknown }) => void) | null>(null)
   const [clarifyParams, setClarifyParams] = useState<unknown | null>(null)
+  // Dangerous-command approvals. Refusing them (the old "method not found") made the host
+  // withdraw the approval and fail the command, so the phone answers them itself.
+  const [approvals, setApprovals] = useState<ApprovalRequest[]>([])
+  const [approvalBroker] = useState(() => createApprovalBroker(setApprovals))
   useEffect(() => {
     setServerRequestHandler(request => {
+      if (request.method === 'approval') return approvalBroker.handle(request)
       if (request.method !== 'clarify') {
         return Promise.resolve({ error: { code: -32601, message: `Method not found: ${request.method}` } })
       }
@@ -585,7 +618,102 @@ export default function App() {
       })
     })
     return () => setServerRequestHandler(undefined)
-  }, [])
+  }, [approvalBroker])
+
+  const approvalBotName = useCallback((approval: ApprovalRequest) => {
+    const storedId = approval.sessionId ? storedSessionForLiveId(approval.sessionId) ?? approval.sessionId : null
+    const session = storedId ? sessions.find(item => item.id === storedId) : undefined
+    const profileName = session?.profile ?? (storedId && selected?.id === storedId ? selected.profile : undefined)
+    const profile = profileName ? profiles.find(item => item.name === profileName) : undefined
+    return profile?.display_name || (profileName ? titleize(profileName) : 'Hermes')
+  }, [sessions, profiles, selected])
+
+  // Bot faces: the open conversation's Bot shows what its turn is doing; the rest idle.
+  useEffect(() => {
+    if (!happyProfile) return
+    const timer = window.setTimeout(() => setHappyProfile(null), 3600)
+    return () => window.clearTimeout(timer)
+  }, [happyProfile])
+  const botMoods = useMemo(() => {
+    const moods: Record<string, BotMood> = {}
+    const latest = new Map<string, { lastActive?: number; unread: boolean }>()
+    for (const session of sessions) {
+      const seen = latest.get(session.profile)
+      latest.set(session.profile, {
+        lastActive: Math.max(seen?.lastActive ?? 0, session.last_active ?? 0) || undefined,
+        unread: Boolean(seen?.unread || session.unread),
+      })
+    }
+    for (const profile of profiles) {
+      const seen = latest.get(profile.name)
+      moods[profile.name] = idleMood(seen?.lastActive, seen?.unread ?? false)
+    }
+    for (const approval of approvals) {
+      const storedId = approval.sessionId ? storedSessionForLiveId(approval.sessionId) ?? approval.sessionId : null
+      const profileName = (storedId ? sessions.find(item => item.id === storedId)?.profile : undefined) ?? (storedId && selected?.id === storedId ? selected.profile : undefined)
+      if (profileName) moods[profileName] = 'waiting'
+    }
+    if (selected && moods[selected.profile] !== 'waiting') {
+      moods[selected.profile] = liveMood({
+        sending,
+        streaming: Boolean(streaming),
+        runningTools: toolActivities.filter(item => item.status === 'running').map(item => item.name),
+        approvalPending: Boolean(clarifyParams),
+        error: Boolean(error),
+        justFinished: happyProfile === selected.profile,
+      }) ?? 'idle'
+    }
+    return moods
+  }, [sessions, profiles, approvals, selected, sending, streaming, toolActivities, clarifyParams, error, happyProfile])
+
+  // Allow once / Deny tapped on the notification (shade, lock screen, cover screen).
+  useEffect(() => {
+    let unsubscribe = () => {}
+    let disposed = false
+    void listenForApprovalActions(({ requestId, choice }) => {
+      if (requestId.startsWith(FLUX_REQUEST_PREFIX)) {
+        if (choice === 'once' || choice === 'deny') {
+          void decideFluxApproval(requestId.slice(FLUX_REQUEST_PREFIX.length), choice === 'once' ? 'approved' : 'denied')
+            .finally(() => void clearApprovalNotification(requestId))
+        }
+        return
+      }
+      if (choice === 'once' || choice === 'deny') approvalBroker.answerByRequestId(requestId, choice)
+    }).then(stop => { if (disposed) stop(); else unsubscribe = stop })
+    return () => { disposed = true; unsubscribe() }
+  }, [approvalBroker])
+
+  // Flux decisions (findings that need Graham, or a Bot asking him) arrive as the same Allow/Deny card.
+  useEffect(() => watchFluxApprovals({ post: postApprovalNotification, clear: clearApprovalNotification }), [])
+
+  // A waiting approval is surfaced as a notification only while the app is not on screen,
+  // and withdrawn the moment it is answered anywhere.
+  const notifiedApprovalsRef = useRef(new Set<string>())
+  useEffect(() => {
+    const sync = () => {
+      const notified = notifiedApprovalsRef.current
+      const live = new Set(approvals.map(item => item.requestId).filter((id): id is string => !!id))
+      for (const id of [...notified]) {
+        if (!live.has(id)) { notified.delete(id); void clearApprovalNotification(id) }
+      }
+      if (document.visibilityState === 'visible') return
+      for (const approval of approvals) {
+        if (!approval.requestId || notified.has(approval.requestId)) continue
+        notified.add(approval.requestId)
+        void postApprovalNotification({ requestId: approval.requestId, bot: approvalBotName(approval), command: approval.command, description: approval.description })
+      }
+    }
+    sync()
+    document.addEventListener('visibilitychange', sync)
+    return () => document.removeEventListener('visibilitychange', sync)
+  }, [approvals, approvalBotName])
+
+  const answerApproval = useCallback((approval: ApprovalRequest, choice: ApprovalChoice) => {
+    approvalBroker.answer(approval.serverRequestId, choice)
+  }, [approvalBroker])
+  const approvalSheet = approvals[0]
+    ? <ApprovalSheet key={approvals[0].serverRequestId} approval={approvals[0]} botName={approvalBotName(approvals[0])} waiting={approvals.length - 1} onAnswer={choice => answerApproval(approvals[0], choice)}/>
+    : null
 
   const answerClarify = useCallback((result: unknown) => {
     clarifyResolverRef.current?.({ result })
@@ -666,7 +794,7 @@ export default function App() {
     <div className="roster-list-scroll" ref={rosterScrollRef} onTouchStart={rosterTouchStart} onTouchMove={rosterTouchMove} onTouchEnd={rosterTouchEnd}>
       {rosterPullActive && <div className="roster-pull-cue" style={{ height: `${rosterPullRefreshing ? 46 : rosterPullDistance}px` }}><RefreshCw size={15} className={rosterPullRefreshing ? 'pull-refresh-spinner' : ''}/><span>{rosterPullRefreshing ? 'Refreshing…' : rosterPullDistance >= 56 ? 'Release to refresh' : 'Pull to refresh'}</span></div>}
       {error && <Notice message={error} retry={() => void refresh()}/>}
-      {loading && !profiles.length ? <Skeleton/> : tab === 'bots' ? <section className="bot-list">{rosterEntries.map((entry, index) => entry.kind === 'group' ? <button className="bot-row group-row enter" style={{ animationDelay: `${Math.min(index, 8) * 28}ms` }} key={entry.key} onClick={() => setOpenGroupName(entry.group.name)}><span className="group-glyph"><Users size={17}/></span><span className="bot-copy"><b>{entry.group.name}</b><small>{entry.group.members.length} bots · {entry.group.members.map(name => titleize(name)).join(', ')}</small></span><span className="meta">{entry.lastActive ? ago(entry.lastActive) : ''}</span></button> : <button className="bot-row enter" style={{ animationDelay: `${Math.min(index, 8) * 28}ms` }} key={entry.key} disabled={!entry.session} onClick={() => entry.session && void openSession(entry.session)}><BotAvatar profile={entry.profile} fallbackName={entry.profile.name}/><span className="bot-copy"><b>{entry.profile.display_name || titleize(entry.profile.name)}</b><small>{entry.session?.preview || entry.profile.description || 'No messages yet'} </small></span><span className="meta">{ago(entry.session?.last_active)}{entry.session && <i className={entry.session.unread ? 'unread' : ''}/>}</span></button>)}</section> : <section className="bot-list">{visibleSessions.map((session, index) => <button className="bot-row enter" style={{ animationDelay: `${Math.min(index, 8) * 28}ms` }} key={`${session.profile}:${session.id}`} onClick={() => void openSession(session)}><BotAvatar profile={profiles.find(profile => profile.name === session.profile)} fallbackName={session.profile} variant="session"/><span className="bot-copy"><b>{session.title || 'Untitled session'}</b><small>{titleize(session.profile)} · {session.preview}</small></span><span className="meta">{ago(session.last_active)}</span></button>)}</section>}
+      {loading && !profiles.length ? <Skeleton/> : tab === 'bots' ? <section className="bot-list">{rosterEntries.map((entry, index) => entry.kind === 'group' ? <button className="bot-row group-row enter" style={{ animationDelay: `${Math.min(index, 8) * 28}ms` }} key={entry.key} onClick={() => setOpenGroupName(entry.group.name)}><span className="group-glyph"><Users size={17}/></span><span className="bot-copy"><b>{entry.group.name}</b><small>{entry.group.members.length} bots · {entry.group.members.map(name => titleize(name)).join(', ')}</small></span><span className="meta">{entry.lastActive ? ago(entry.lastActive) : ''}</span></button> : <button className="bot-row enter" style={{ animationDelay: `${Math.min(index, 8) * 28}ms` }} key={entry.key} disabled={!entry.session && newChatBusy} onClick={() => entry.session ? void openSession(entry.session) : void startNewChat(entry.profile.name)}><BotAvatar profile={entry.profile} fallbackName={entry.profile.name}/><span className="bot-copy"><b>{entry.profile.display_name || titleize(entry.profile.name)}</b><small>{entry.session?.preview || entry.profile.description || 'No messages yet'} </small></span><span className="meta">{ago(entry.session?.last_active)}{entry.session && <i className={entry.session.unread ? 'unread' : ''}/>}</span></button>)}</section> : <section className="bot-list">{visibleSessions.map((session, index) => <button className="bot-row enter" style={{ animationDelay: `${Math.min(index, 8) * 28}ms` }} key={`${session.profile}:${session.id}`} onClick={() => void openSession(session)}><BotAvatar profile={profiles.find(profile => profile.name === session.profile)} fallbackName={session.profile} variant="session"/><span className="bot-copy"><b>{session.title || 'Untitled session'}</b><small>{titleize(session.profile)} · {session.preview}</small></span><span className="meta">{ago(session.last_active)}</span></button>)}</section>}
     </div>
     <footer className="roster-actions">{tab === 'bots' ? <><button className="secondary" onClick={() => { setGroupError(''); setNewGroupOpen(true) }}><Users size={16}/> New group</button><span className="new-bot-wrap">{newBotMenuOpen && <div className="new-bot-menu"><button onClick={() => { setNewBotMenuOpen(false); setNewChatOpen(true) }}><MessageSquare size={15}/> New Chat</button><button onClick={() => { setNewBotMenuOpen(false); setCreateOpen(true) }}><Plus size={15}/> New Bot</button></div>}<button className="primary" onClick={() => setNewBotMenuOpen(value => !value)} aria-haspopup="menu" aria-expanded={newBotMenuOpen}><Plus size={16}/> New Bot</button></span></> : <button className="primary wide" onClick={() => setTab('bots')}>Back to Bots</button>}</footer>
   </main>
@@ -752,7 +880,7 @@ export default function App() {
 
   const screen = newChatOpen ? newChatView : newGroupOpen ? newGroupView : createOpen ? wizardView : settings ? settingsView : profileView ?? groupView ?? chatView ?? (tab === 'tasks' ? tasksView : homeView)
 
-  if (!wide) return screen
+  if (!wide) return <BotMoodContext.Provider value={botMoods}>{screen}{approvalSheet}</BotMoodContext.Provider>
 
   const activeProfile = selected ? profiles.find(profile => profile.name === selected.profile) : undefined
   const activeBotName = activeProfile?.display_name || (selected?.title && selected.title !== 'Bot Chat' ? selected.title : selected ? titleize(selected.profile) : '')
@@ -763,7 +891,7 @@ export default function App() {
   // to the divider itself once the pointer is captured, so it cannot leak past release.
   function dragColumn(kind: 'rail' | 'context', event: { clientX: number; pointerId: number; currentTarget: HTMLButtonElement }) {
     const startX = event.clientX
-    const startWidth = (kind === 'rail' ? railWidth : contextWidth) ?? 296
+    const startWidth = (kind === 'rail' ? columns.rail : columns.context) || 296
     const handle = event.currentTarget
     handle.setPointerCapture(event.pointerId)
     let dragged = false
@@ -781,7 +909,7 @@ export default function App() {
       handle.removeEventListener('pointerup', onUp)
       handle.removeEventListener('pointercancel', onUp)
       if (dragged) return
-      if (kind === 'rail') updateLayout({ railCollapsed: !railCollapsed }); else updateLayout({ contextCollapsed: !contextCollapsed })
+      if (kind === 'rail') { if (columns.railHidden) showRail(); else updateLayout({ railCollapsed: true }) } else updateLayout({ contextCollapsed: !contextCollapsed })
     }
     handle.addEventListener('pointermove', onMove)
     handle.addEventListener('pointerup', onUp)
@@ -790,23 +918,37 @@ export default function App() {
 
   // The tri-fold workspace. Every screen renders in the middle pane, so opening a
   // Bot's settings no longer collapses the layout back to a single column.
-  return <div className={`wide-shell${railCollapsed ? ' rail-collapsed' : ''}${contextCollapsed ? ' context-collapsed' : ''}`}
-    style={railWidth === null && contextWidth === null ? undefined : {
-      gridTemplateColumns: `${railCollapsed ? 0 : railWidth ?? 296}px 7px minmax(340px,1fr) 7px ${contextCollapsed ? 0 : contextWidth ?? 296}px`,
-    }}>
-    {railCollapsed && <button className="wide-rail-reveal" onClick={() => updateLayout({ railCollapsed: false })} aria-label="Show Bots column"><ChevronRight size={13}/></button>}
-    {contextCollapsed && <button className="wide-context-reveal" onClick={() => updateLayout({ contextCollapsed: false })} aria-label="Show computer column"><ChevronLeft size={13}/></button>}
+  // Book posture: the Bots rail is the left page and the conversation the right page.
+  const bookGrid = fold.posture === 'book' && fold.hinge && !railCollapsed ? bookColumns(fold.hinge, viewportWidth) : null
+  const columns = fitWideColumns(layout, viewportWidth)
+  // On a screen too narrow for three columns the rail makes way for the computer column, so
+  // bringing either back closes the other rather than overflowing the screen.
+  const showRail = () => updateLayout(columns.railAutoHidden || (viewportWidth < THREE_COLUMN_MIN && !contextCollapsed)
+    ? { railCollapsed: false, contextCollapsed: true }
+    : { railCollapsed: false })
+  return <BotMoodContext.Provider value={botMoods}><div className={`wide-shell${columns.railHidden ? ' rail-collapsed' : ''}${columns.contextHidden || bookGrid ? ' context-collapsed' : ''}${bookGrid ? ' book-posture' : ''}`}
+    style={{ gridTemplateColumns: bookGrid ?? columns.template }}>
+    {columns.railHidden && <button className="wide-rail-reveal" onClick={showRail} aria-label="Show Bots column"><ChevronRight size={13}/></button>}
+    {contextCollapsed && !bookGrid && <button className="wide-context-reveal" onClick={() => updateLayout({ contextCollapsed: false })} aria-label="Show computer column"><ChevronLeft size={13}/></button>}
 
     <aside className="wide-rail" aria-label="Bots">
       <header className="wide-rail-head">
         <b>Bots</b>
         <span className="wide-rail-actions">
+          <span className="new-bot-wrap">
+            {railMenuOpen && <div className="new-bot-menu rail-menu" role="menu">
+              <button role="menuitem" onClick={() => { setRailMenuOpen(false); setNewChatOpen(true) }}><MessageSquare size={15}/> New Chat</button>
+              <button role="menuitem" onClick={() => { setRailMenuOpen(false); setCreateOpen(true) }}><Plus size={15}/> New Bot</button>
+              <button role="menuitem" onClick={() => { setRailMenuOpen(false); setGroupError(''); setNewGroupOpen(true) }}><Users size={15}/> New group</button>
+            </div>}
+            <button className="round-control" onClick={() => setRailMenuOpen(value => !value)} aria-label="New chat, Bot or group" aria-haspopup="menu" aria-expanded={railMenuOpen}><Plus size={16}/></button>
+          </span>
           <button className="round-control" onClick={() => setSearching(value => !value)} aria-label="Search Bots"><Search size={16}/></button>
           <button className="round-control" onClick={() => setSettings(true)} aria-label="Settings"><SettingsIcon size={16}/></button>
         </span>
       </header>
       {searching && <div className="wide-rail-search"><Search size={15}/><input autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="Search bots…"/><button onClick={() => { setQuery(''); setSearching(false) }} aria-label="Clear search"><X size={15}/></button></div>}
-      <section className="bot-list wide-rail-list">{rows.map(({ profile, session }, index) => <button className={`bot-row${session && session.id === selected?.id ? ' selected' : ''}`} style={{ animationDelay: `${Math.min(index, 8) * 28}ms` }} key={profile.name} disabled={!session} onClick={() => session && void openSession(session)}><BotAvatar profile={profile} fallbackName={profile.name}/><span className="bot-copy"><b>{profile.display_name || titleize(profile.name)}</b><small>{session?.preview || profile.description || 'No messages yet'}</small></span><span className="meta">{ago(session?.last_active)}{session && <i className={session.unread ? 'unread' : ''}/>}</span></button>)}</section>
+      <section className="bot-list wide-rail-list">{rows.map(({ profile, session }, index) => <button className={`bot-row${session && session.id === selected?.id ? ' selected' : ''}`} style={{ animationDelay: `${Math.min(index, 8) * 28}ms` }} key={profile.name} disabled={!session && newChatBusy} onClick={() => session ? void openSession(session) : void startNewChat(profile.name)}><BotAvatar profile={profile} fallbackName={profile.name}/><span className="bot-copy"><b>{profile.display_name || titleize(profile.name)}</b><small>{session?.preview || profile.description || 'No messages yet'}</small></span><span className="meta">{ago(session?.last_active)}{session && <i className={session.unread ? 'unread' : ''}/>}</span></button>)}</section>
     </aside>
 
     <button className="wide-divider" onPointerDown={event => dragColumn('rail', event)} aria-label="Drag to resize the Bots column, or click to toggle it" title="Drag to resize · click to toggle"/>
@@ -824,7 +966,8 @@ export default function App() {
         <BotCapabilities profileName={selected.profile} onOpenSettings={() => setProfileSheet(true)} onUpdated={() => void refresh()}/>
       </> : <p className="wide-context-empty">Open a Bot to see its computer and routines.</p>}
     </aside>
-  </div>
+    {approvalSheet}
+  </div></BotMoodContext.Provider>
 }
 
 function Notice({ message, retry }: { message: string; retry: () => void }) {

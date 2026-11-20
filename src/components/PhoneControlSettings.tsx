@@ -1,0 +1,94 @@
+import { useEffect, useRef, useState } from 'react'
+import { ArrowLeft, Copy, RefreshCw, Smartphone, SmartphoneNfc } from 'lucide-react'
+
+import { useEdgeSwipeBack } from '../edge-swipe'
+import type { LiveProfile } from '../hermes'
+import { hermesMcpSnippet, openAccessibilitySettings, phoneControlAvailable, readPhoneAudit, readPhoneControlStatus, readPhonePolicy, readReplyDrafts, rotatePhoneControlToken, setPhoneControlAskFirst, type PhoneControlStatus } from '../phone-control'
+import { PhoneActivityPage, PhoneRulesPage, ReplyDraftsPage } from './PhoneControlPages'
+
+/**
+ * Settings → Phone control. Android only lets the user switch an accessibility service on, so
+ * this screen explains what it grants, opens the right system page, and shows the address and
+ * token a Hermes host needs. Status is re-read whenever the app returns to the foreground.
+ */
+export function PhoneControlSettings({ back, profiles = [] }: { back: () => void; profiles?: LiveProfile[] }) {
+  const [page, setPage] = useState<'main' | 'rules' | 'drafts' | 'activity'>('main')
+  if (page === 'rules') return <PhoneRulesPage back={() => setPage('main')} profiles={profiles}/>
+  if (page === 'drafts') return <ReplyDraftsPage back={() => setPage('main')} profiles={profiles}/>
+  if (page === 'activity') return <PhoneActivityPage back={() => setPage('main')} profiles={profiles}/>
+  return <PhoneControlMain back={back} open={setPage}/>
+}
+
+function PhoneControlMain({ back, open }: { back: () => void; open: (page: 'rules' | 'drafts' | 'activity') => void }) {
+  const shellRef = useRef<HTMLElement>(null)
+  useEdgeSwipeBack(shellRef, back)
+  const [status, setStatus] = useState<PhoneControlStatus | null>(() => readPhoneControlStatus())
+  const [hint, setHint] = useState('')
+  const [summary] = useState(() => {
+    const policy = readPhonePolicy()
+    const drafts = readReplyDrafts()
+    const activity = readPhoneAudit(50)
+    return {
+      blocked: policy.apps.filter(app => app.mode === 'block').length,
+      drafts: drafts?.access ? drafts.apps.length : -1,
+      latest: activity[0],
+    }
+  })
+
+  useEffect(() => {
+    const read = () => setStatus(readPhoneControlStatus())
+    const timer = window.setInterval(read, 2000)
+    document.addEventListener('visibilitychange', read)
+    return () => { window.clearInterval(timer); document.removeEventListener('visibilitychange', read) }
+  }, [])
+
+  const copy = async (text: string, what: string) => {
+    try { await navigator.clipboard.writeText(text); setHint(`${what} copied.`) } catch { setHint('Copy is not available here.') }
+  }
+
+  const available = phoneControlAvailable()
+  const on = !!status?.enabled && !!status?.running
+
+  return <main ref={shellRef} className="app panel notifications-screen phone-control-screen">
+    <header className="panel-head"><button className="back-button" onClick={back} aria-label="Back"><ArrowLeft size={19}/></button><div><h2>Phone control</h2><p>Let your Bots use apps on this phone</p></div></header>
+
+    <section className="notification-hero">
+      {on ? <SmartphoneNfc size={17}/> : <Smartphone size={17}/>}
+      <div>
+        <b>{!available ? 'Not available on this device' : on ? 'Bots can operate this phone' : 'Phone control is off'}</b>
+        <span>{on
+          ? 'A notification shows each action and has a Stop button. Typing into password fields is always blocked.'
+          : 'When on, Bots on your Hermes host can read the screen, tap, type, swipe and open apps or links here — only from your private network, with this phone\u2019s token.'}</span>
+      </div>
+    </section>
+
+    {available && <section className="menu-list">
+      <button onClick={() => openAccessibilitySettings()}>{status?.enabled ? 'Turn off in Accessibility settings' : 'Turn on in Accessibility settings'} <span>›</span></button>
+      {status && <button className="settings-toggle-row" aria-pressed={status.askFirst} onClick={() => {
+        const next = !status.askFirst
+        if (setPhoneControlAskFirst(next)) {
+          setStatus(readPhoneControlStatus())
+          setHint(next ? 'Ask first is on: the phone asks you before Bots send, post, pay or delete.' : 'Autopilot is on: Bots act without asking. Turn Ask first back on at any time.')
+        }
+      }}>Ask first <span className={`capability-toggle ${status.askFirst ? 'on' : ''}`}><i/>{status.askFirst ? 'ON' : 'OFF'}</span></button>}
+      <button onClick={() => open('rules')}>Rules <span>{summary.blocked ? `${summary.blocked} blocked ›` : '›'}</span></button>
+      <button onClick={() => open('drafts')}>Reply drafts <span>{summary.drafts < 0 ? 'Off ›' : summary.drafts ? `${summary.drafts} app${summary.drafts === 1 ? '' : 's'} ›` : 'Off ›'}</span></button>
+      <button onClick={() => open('activity')}>Activity <span>{summary.latest ? `${new Date(summary.latest.at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })} ›` : '›'}</span></button>
+    </section>}
+
+    {available && status && <p className="phone-control-mode">{status.askFirst
+      ? 'Before a Bot taps anything that sends, posts, pays, buys, deletes or confirms, an Allow / Deny card appears on this phone. No answer within 60 seconds counts as Deny.'
+      : 'Autopilot: Bots act without asking. Typing into password fields is still always blocked, and the notification still shows every action with Stop.'}</p>}
+
+    {available && status && <section className="phone-control-details">
+      <h3>Connect a Hermes Bot</h3>
+      <p>Add this phone as an MCP server on the Bot that should use it. Address: <code>{status.url ?? 'not on a Wi-Fi network'}</code></p>
+      <pre>{hermesMcpSnippet({ ...status, token: '••••' + status.token.slice(-6) })}</pre>
+      <div className="phone-control-actions">
+        <button className="secondary" onClick={() => void copy(hermesMcpSnippet(status), 'Setup')}><Copy size={15}/> Copy setup</button>
+        <button className="secondary" onClick={() => { rotatePhoneControlToken(); setStatus(readPhoneControlStatus()); setHint('New token created. Update it on your Hermes host.') }}><RefreshCw size={15}/> New token</button>
+      </div>
+      {hint && <p className="phone-control-hint" role="status">{hint}</p>}
+    </section>}
+  </main>
+}

@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flux Live Map</title>
+<style>
+  :root { --bg:#0b0e14; --panel:#121722; --line:#232a3a; --text:#e6e9ef; --dim:#8b93a7; --task:#f5a524; --ttl:#22d3ee; --persistent:#a78bfa; --core:#34d399; --bad:#f87171; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { display:flex; gap:12px; align-items:baseline; padding:14px 18px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; letter-spacing:.3px; }
+  header .tag { color:var(--dim); font-size:12px; }
+  .pill { padding:2px 8px; border-radius:999px; border:1px solid var(--line); font-size:12px; }
+  .pill.frozen { color:var(--bad); border-color:var(--bad); }
+  main { display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:0; min-height:calc(100vh - 54px); }
+  @media (max-width: 900px) { main { grid-template-columns:1fr; } }
+  #map { width:100%; height:100%; min-height:420px; display:block; }
+  aside { border-left:1px solid var(--line); padding:14px; overflow:auto; max-height:calc(100vh - 54px); }
+  @media (max-width: 900px) { aside { border-left:0; border-top:1px solid var(--line); max-height:none; } }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); margin:16px 0 8px; }
+  .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+  .stat { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:8px; }
+  .stat b { display:block; font-size:18px; }
+  .stat span { color:var(--dim); font-size:11px; }
+  .bar { height:6px; background:var(--line); border-radius:4px; overflow:hidden; margin:4px 0 10px; }
+  .bar i { display:block; height:100%; background:var(--core); }
+  .legend { display:flex; gap:12px; flex-wrap:wrap; color:var(--dim); font-size:12px; }
+  .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:4px; vertical-align:-1px; }
+  ul.events { list-style:none; margin:0; padding:0; font-size:12px; }
+  ul.events li { padding:5px 0; border-bottom:1px solid var(--line); display:flex; gap:8px; }
+  ul.events time { color:var(--dim); flex:0 0 52px; }
+  .ok { color:var(--core); } .bad { color:var(--bad); }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  td, th { text-align:left; padding:4px 2px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:500; }
+  #detail { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; font-size:12px; display:none; }
+  .approval { background:var(--panel); border:1px solid #6b5b1f; border-radius:10px; padding:10px; margin-bottom:8px; font-size:12px; }
+  .approval b { display:block; font-size:13px; margin-bottom:4px; }
+  .approval p { margin:6px 0; color:var(--dim); white-space:pre-wrap; max-height:9em; overflow:auto; }
+  .approval .actions { display:flex; gap:8px; }
+  .approval button { flex:1; padding:8px; border-radius:8px; border:1px solid var(--line); background:#1b2333; color:var(--text); font:inherit; }
+  .approval button.yes { border-color:var(--core); color:var(--core); }
+  .approval button.no { border-color:var(--bad); color:var(--bad); }
+  .approval.decided { opacity:.6; border-color:var(--line); }
+  svg text { fill:var(--text); font-size:calc(11px * var(--k, 1)); }
+  svg .label-dim { fill:var(--dim); font-size:calc(10px * var(--k, 1)); }
+  .pulse { animation:pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity:.25; } 50% { opacity:.8; } }
+  @media (prefers-reduced-motion: reduce) { .pulse { animation:none; opacity:.5; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Flux Live Map</h1>
+  <span class="tag" id="core"></span>
+  <span class="pill" id="state">connecting…</span>
+  <span class="legend">
+    <span><i class="dot" style="background:var(--task)"></i>task</span>
+    <span><i class="dot" style="background:var(--ttl)"></i>ttl (arc = time left)</span>
+    <span><i class="dot" style="background:var(--persistent)"></i>persistent</span>
+    <span><i class="dot" style="border:1px dashed var(--dim)"></i>dormant role</span>
+  </span>
+</header>
+<main>
+  <svg id="map" viewBox="-500 -400 1000 800" role="img" aria-label="Flux agents around the Hermes core"></svg>
+  <aside>
+    <div id="detail"></div>
+    <section id="approvals-box" hidden>
+      <h2>Needs your decision</h2>
+      <div id="approvals"></div>
+    </section>
+    <h2>Today</h2>
+    <div class="stats" id="stats"></div>
+    <h2>Daily budget</h2>
+    <div id="budget"></div>
+    <h2>Spend by capability (7 days)</h2>
+    <table id="spend"></table>
+    <h2>Recent events</h2>
+    <ul class="events" id="events"></ul>
+  </aside>
+</main>
+<script>
+const NS = 'http://www.w3.org/2000/svg';
+const COLORS = { task: 'var(--task)', ttl: 'var(--ttl)', persistent: 'var(--persistent)' };
+const svg = document.getElementById('map');
+let selected = null, last = null;
+
+const el = (name, attrs = {}, parent = svg) => {
+  const node = document.createElementNS(NS, name);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  parent.appendChild(node);
+  return node;
+};
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const money = n => '$' + (n || 0).toFixed(n >= 1 ? 2 : 4);
+const short = n => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n || 0);
+
+function arc(r, fraction) {
+  const a = Math.max(0.001, Math.min(0.999, fraction)) * 2 * Math.PI;
+  const x = r * Math.sin(a), y = -r * Math.cos(a);
+  return `M 0 ${-r} A ${r} ${r} 0 ${a > Math.PI ? 1 : 0} 1 ${x.toFixed(2)} ${y.toFixed(2)}`;
+}
+
+function draw(v) {
+  svg.textContent = '';
+  // The map is 1000 units wide; in a narrow column (phone, Fold7 settings pane) scale labels up.
+  const k = Math.max(1, Math.min(2.2, 760 / (svg.clientWidth || 760)));
+  svg.style.setProperty('--k', k);
+  const live = new Map(v.agents.map(a => [a.roleId, a]));
+  const roles = v.roles;
+  // Core
+  el('circle', { r: 46, fill: '#0f1a17', stroke: 'var(--core)', 'stroke-width': 2 });
+  el('text', { 'text-anchor': 'middle', y: -4 * k }).textContent = 'Hermes';
+  el('text', { 'text-anchor': 'middle', y: 12 * k, class: 'label-dim' }).textContent = `Flux core · ${v.coreId}`;
+  // Bots on the inner ring
+  v.bots.forEach((b, i) => {
+    const a = (i / v.bots.length) * 2 * Math.PI - Math.PI / 2, r = 118;
+    const g = el('g', { transform: `translate(${(r * Math.cos(a)).toFixed(1)} ${(r * Math.sin(a)).toFixed(1)})` });
+    el('circle', { r: 7, fill: '#1b2333', stroke: '#3a4560' }, g);
+    el('text', { 'text-anchor': 'middle', y: 12 + 10 * k, class: 'label-dim' }, g).textContent = b;
+  });
+  // Roles on the outer ring: a live agent is a formed orb, a dormant role is a dotted proposal ring
+  roles.forEach((role, i) => {
+    const a = (i / roles.length) * 2 * Math.PI - Math.PI / 2 + 0.3, R = 285;
+    const x = R * Math.cos(a), y = R * Math.sin(a);
+    const agent = live.get(role.id);
+    el('line', { x1: 0, y1: 0, x2: x.toFixed(1), y2: y.toFixed(1), stroke: agent ? COLORS[agent.lifecycle] : 'var(--line)', 'stroke-width': agent ? 1.5 : 1, 'stroke-dasharray': agent && agent.state === 'active' ? '' : '4 6', opacity: agent ? 0.7 : 0.5 });
+    const g = el('g', { transform: `translate(${x.toFixed(1)} ${y.toFixed(1)})`, style: 'cursor:pointer', tabindex: 0 });
+    g.addEventListener('click', () => { selected = role.id; showDetail(); });
+    g.addEventListener('keydown', e => { if (e.key === 'Enter') { selected = role.id; showDetail(); } });
+    const color = agent ? COLORS[agent.lifecycle] : 'var(--dim)';
+    if (agent) {
+      if (agent.state === 'active') el('circle', { r: 44, fill: color, class: 'pulse' }, g);
+      el('circle', { r: 30, fill: '#111827', stroke: color, 'stroke-width': 3 }, g);
+      if (agent.lifecycle === 'persistent') el('circle', { r: 36, fill: 'none', stroke: color, 'stroke-width': 1 }, g);
+      if (agent.lifecycle === 'ttl' && agent.ttlRemainingSeconds != null && role.ttlSeconds) {
+        el('path', { d: arc(37, agent.ttlRemainingSeconds / role.ttlSeconds), fill: 'none', stroke: color, 'stroke-width': 3, 'stroke-linecap': 'round' }, g);
+      }
+      el('text', { 'text-anchor': 'middle', y: 4 }, g).textContent = agent.calls;
+    } else {
+      el('circle', { r: 26, fill: 'none', stroke: 'var(--dim)', 'stroke-dasharray': '3 5' }, g);
+    }
+    // Satellites: tools, knowledge, consults
+    const sats = [...(role.toolsets || []).map(t => ['tool', t]), ...(role.knowledge || []).map(k => ['knowledge', k]), ...(role.consults || []).map(c => ['consult', c])];
+    sats.forEach(([kind, name], j) => {
+      const b = a + (j - (sats.length - 1) / 2) * 0.32, sr = 58;
+      const sx = sr * Math.cos(b), sy = sr * Math.sin(b);
+      el('line', { x1: 0, y1: 0, x2: sx.toFixed(1), y2: sy.toFixed(1), stroke: color, opacity: agent ? 0.5 : 0.2 }, g);
+      el('circle', { cx: sx.toFixed(1), cy: sy.toFixed(1), r: 6, fill: kind === 'tool' ? '#1f2937' : kind === 'knowledge' ? '#1e1b4b' : '#052e2b', stroke: color, opacity: agent ? 1 : 0.4 }, g);
+      el('title', {}, g).textContent = `${kind}: ${name}`;
+    });
+    el('text', { 'text-anchor': 'middle', y: 40 + 12 * k }, g).textContent = role.title;
+    el('text', { 'text-anchor': 'middle', y: 40 + 25 * k, class: 'label-dim' }, g).textContent = agent
+      ? `${agent.lifecycle} · ${agent.state}${agent.ttlRemainingSeconds != null ? ' · ' + Math.ceil(agent.ttlRemainingSeconds / 60) + 'm' : ''}`
+      : `${role.lifecycle} · dormant`;
+  });
+}
+
+function showDetail() {
+  const box = document.getElementById('detail');
+  if (!selected || !last) { box.style.display = 'none'; return; }
+  const role = last.roles.find(r => r.id === selected), agent = last.agents.find(a => a.roleId === selected);
+  box.style.display = 'block';
+  box.innerHTML = `<b>${esc(role.title)}</b> <span class="tag">${esc(role.id)}</span><br>
+    Lifecycle: ${esc(agent ? agent.lifecycle : role.lifecycle)}${role.promote ? ` (promotes to ${esc(role.promote.to)} after ${role.promote.distinctRequesters} requesters)` : ''} · memory ${esc(role.memory)} · share ${esc(role.share)}<br>
+    Tools: ${esc((role.toolsets || []).join(', ') || 'none')} · Knowledge: ${esc((role.knowledge || []).join(', ') || 'none')} · Consults: ${esc((role.consults || []).join(', ') || 'none')}<br>
+    Models: ${esc((role.models || []).join(', '))}<br>
+    ${agent ? `Live as <b>${esc(agent.id)}</b>: ${agent.calls} calls · ${short(agent.tokens)} tokens · ${money(agent.costUsd)} · ${agent.distinctRequesters} requesters${agent.promotedAt ? ' · promoted' : ''}` : 'No live agent: it is spawned on demand.'}`;
+}
+
+function panel(v) {
+  const t = v.today;
+  document.getElementById('core').textContent = `${v.coreId} · policy ${v.policyRevision}`;
+  const state = document.getElementById('state');
+  state.textContent = v.frozen ? 'FROZEN' : `${v.active.length} active run${v.active.length === 1 ? '' : 's'} · ledger ${v.chain.ok ? '✓ ' + v.chain.count : '✗ broken'}`;
+  state.className = 'pill' + (v.frozen || !v.chain.ok ? ' frozen' : '');
+  document.getElementById('stats').innerHTML = [
+    [short(t.tokens), 'tokens'], [money(t.costUsd), 'shadow cost'], [t.runs, 'runs'],
+    [t.modelCalls, 'agent calls'], [t.denied, 'denied'], [`${t.spawned}/${t.retired}`, 'spawned/retired'],
+    [t.promoted, 'promoted'], [v.agents.length, 'live agents'], [v.approvalsPending ?? 0, 'awaiting you'],
+  ].map(([b, s]) => `<div class="stat"><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join('');
+  const q = v.week.quality || {};
+  document.getElementById('stats').innerHTML += Object.entries(q).map(([p, g]) => `<div class="stat"><b>${Math.round(g.avgScore * 100)}%</b><span>${esc(p)} quality · ${g.passed}/${g.graded} pass</span></div>`).join('');
+  const b = v.budgets || {};
+  document.getElementById('budget').innerHTML = `
+    ${money(t.costUsd)} of ${money(b.dailyUsd)}<div class="bar"><i style="width:${Math.min(100, 100 * t.costUsd / (b.dailyUsd || 1))}%"></i></div>
+    ${short(t.tokens)} of ${short(b.dailyTokens)} tokens<div class="bar"><i style="width:${Math.min(100, 100 * t.tokens / (b.dailyTokens || 1))}%"></i></div>`;
+  const rows = Object.entries(v.week.byCapability).sort((a, b) => b[1].costUsd - a[1].costUsd);
+  document.getElementById('spend').innerHTML = '<tr><th>Capability</th><th>Steps</th><th>Tokens</th><th>Cost</th></tr>' +
+    rows.map(([k, s]) => `<tr><td>${esc(k)}</td><td>${s.ok}/${s.steps}</td><td>${short(s.tokens)}</td><td>${money(s.costUsd)}</td></tr>`).join('');
+  document.getElementById('events').innerHTML = v.recent.slice().reverse().slice(0, 40).map(r => {
+    const time = new Date(r.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    let text;
+    if (r.type === 'agent') text = `${r.event.replace('agent-', '')} <b>${esc(r.agentId)}</b>${r.from ? ` ${esc(r.from)} → ${esc(r.to)}` : ''}${r.reason ? ` · ${esc(r.reason)}` : ''}`;
+    else if (r.type === 'step') text = `<span class="${r.outcome === 'ok' ? 'ok' : 'bad'}">${esc(r.outcome)}</span> ${esc(r.capabilityId)}${r.agentId ? '' : ' (tool)'} · ${short(r.tokens || 0)} tok · ${money(r.costUsd)}${r.profile ? ' · ' + esc(r.profile) : ''}${r.consults ? ` · ${r.consults} consult` : ''}`;
+    else if (r.type === 'run') text = `<span class="${r.outcome === 'ok' ? 'ok' : 'bad'}">${esc(r.outcome)}</span> run ${esc(r.mission)} by ${esc(r.requester)}${r.depth ? ' (consult)' : ''}${r.reason ? ' · ' + esc(r.reason) : ''}`;
+    else if (r.type === 'grade') text = `graded ${esc(r.capabilityId)} (${esc(r.profile)}) <span class="${r.pass ? 'ok' : 'bad'}">${Math.round(r.score * 100)}%</span>`;
+    else if (r.type === 'approval') text = `approval ${esc(r.event)}${r.decision ? ` <span class="${r.decision === 'approved' ? 'ok' : 'bad'}">${esc(r.decision)}</span>` : ''} · ${esc(r.approvalId)}`;
+    else if (r.type === 'memory') text = `memory ${esc(r.event)} <b>${esc(r.agentId)}</b>${r.redactions ? ` · ${r.redactions} redacted` : ''}`;
+    else if (r.type === 'plan') text = `dry run ${esc(r.mission)} by ${esc(r.requester)} · ${r.allowed ? `≈ ${money(r.expectedUsd)} (≤ ${money(r.upperUsd)})` : '<span class="bad">would be refused</span>'}`;
+    else if (r.type === 'federation') text = `federation ${esc(r.event)} ${esc(r.peerId || '')} ${esc(r.grantId || '')}`;
+    else text = `${esc(r.type)} ${esc(r.action || '')}`;
+    return `<li><time>${time}</time><span>${text}</span></li>`;
+  }).join('');
+}
+
+async function loadApprovals() {
+  const box = document.getElementById('approvals-box');
+  if (!last?.canApprove) { box.hidden = true; return; }
+  const res = await fetch('/api/approvals' + location.search, { cache: 'no-store' });
+  if (!res.ok) return;
+  const { approvals } = await res.json();
+  const shown = approvals.filter(a => a.status === 'pending' || Date.now() - Date.parse(a.decidedAt || a.createdAt) < 3600000).slice(0, 8);
+  box.hidden = !shown.length;
+  document.getElementById('approvals').innerHTML = shown.map(a => `<div class="approval ${a.status === 'pending' ? '' : 'decided'}">
+    <b>${esc(a.title)}</b><span class="tag">${esc(a.requester)} · ${new Date(a.createdAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</span>
+    <p>${esc(a.summary)}</p>
+    ${a.status === 'pending' ? `<div class="actions"><button class="yes" data-id="${esc(a.id)}" data-d="approved">Approve</button><button class="no" data-id="${esc(a.id)}" data-d="denied">Deny</button></div>` : `<span class="${a.status === 'approved' ? 'ok' : 'bad'}">${esc(a.status)}</span>`}
+  </div>`).join('');
+}
+
+document.getElementById('approvals').addEventListener('click', async event => {
+  const button = event.target.closest('button[data-id]');
+  if (!button) return;
+  button.disabled = true;
+  await fetch('/api/approvals' + location.search, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: button.dataset.id, decision: button.dataset.d, via: 'live-map' }) });
+  loadApprovals();
+});
+
+async function tick() {
+  try {
+    const res = await fetch('/api/view' + location.search, { cache: 'no-store' });
+    if (!res.ok) throw new Error(res.status);
+    last = await res.json();
+    draw(last); panel(last); showDetail();
+    loadApprovals().catch(() => {});
+  } catch (e) {
+    document.getElementById('state').textContent = 'offline';
+  }
+}
+tick();
+setInterval(tick, 2000);
+</script>
+</body>
+</html>
