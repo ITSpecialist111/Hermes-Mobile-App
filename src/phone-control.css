@@ -37,3 +37,10 @@
 .phone-audit-shots img{display:block;width:100%;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
 .phone-audit-shots figcaption{margin-top:4px;color:var(--muted);font-size:11px;text-align:center}
 .menu-list button .phone-rule-bot{color:var(--text);font:inherit}
+
+/* Settings → Flux agents: the host's Live Map fills the page (unfolded, it gets the whole inner screen). */
+.flux-screen{display:flex;flex-direction:column;height:100%;overflow:hidden}
+.flux-screen .panel-head{flex:0 0 auto}
+.flux-live-map{flex:1 1 auto;width:100%;min-height:60vh;border:0;background:#0b0e14}
+.flux-link{display:grid;gap:10px;padding:0 16px 16px}
+.flux-link input{width:100%;padding:12px 14px;border-radius:12px;border:1px solid var(--border, rgba(127,127,127,.35));background:transparent;color:inherit;font:inherit}

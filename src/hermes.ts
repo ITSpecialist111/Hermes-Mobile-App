@@ -139,7 +139,9 @@ export async function loadSnapshot(baseUrl = activeHermes): Promise<{ profiles: 
   const raw = await invoke<string>('hermes_snapshot', { baseUrl })
   const roster = await rpcCall<{ profiles: LiveProfile[] }>('profiles.list', { include_sessions: true }, baseUrl)
   const snapshot = JSON.parse(raw) as Snapshot
-  return { profiles: roster.profiles, sessions: snapshot.sessions.sessions }
+  // Worker profiles (e.g. Flux's `flux` profile) run agents for other Bots; they are not chat partners.
+  const profiles = roster.profiles.filter(profile => !/\bNot for chat\.?$/i.test(((profile as { description?: string }).description || '').trim()))
+  return { profiles, sessions: snapshot.sessions.sessions }
 }
 
 export async function createProfile(input: { name: string; description: string; soul: string; model?: string; provider?: string; shape?: string; color?: string; title?: string }, baseUrl = activeHermes): Promise<void> {

@@ -1,0 +1,14 @@
+[Unit]
+Description=Hermes Flux: governed specialist agents (MCP 127.0.0.1:18790, Live Map :18791)
+After=network-online.target
+
+[Service]
+EnvironmentFile=%h/.hermes/flux/flux.env
+Environment=FLUX_STATE=%h/.hermes/flux/state
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/node --no-warnings %h/.hermes/flux/app/src/server.cjs
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

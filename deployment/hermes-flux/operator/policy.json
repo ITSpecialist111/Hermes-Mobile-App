@@ -1,0 +1,112 @@
+{
+  "tenantId": "home",
+  "scopeId": "graham",
+  "policyRevision": "2026-11-20.1",
+
+  "bots": {
+    "pilot": ["research", "compliance-review", "purchase-review", "steward-log", "inbox-brief"],
+    "scout": ["research", "compliance-review", "purchase-review"],
+    "atlas": ["research", "compliance-review"],
+    "forge": ["research"],
+    "hearth": ["research", "compliance-review", "steward-log"],
+    "pantry": ["research", "purchase-review"],
+    "shopping": ["research", "purchase-review"],
+    "reply-drafter": ["reply-draft"],
+    "operator": ["research", "compliance-review", "purchase-review", "steward-log", "reply-draft", "inbox-brief"]
+  },
+
+  "missions": {
+    "purchase-review": {
+      "stages": [["market.analyst", "security.analyst", "household.policy"], ["household.steward"]],
+      "maxTokens": 900000,
+      "maxUsd": 5
+    },
+    "compliance-review": {
+      "stages": [["household.policy"], ["compliance.reviewer"]],
+      "maxTokens": 300000,
+      "maxUsd": 2
+    },
+    "research": { "maxTokens": 300000, "maxUsd": 2 },
+    "steward-log": { "maxTokens": 200000, "maxUsd": 1 },
+    "reply-draft": { "maxTokens": 40000, "maxUsd": 0.25 },
+    "inbox-brief": { "maxTokens": 1000, "maxUsd": 0.01 }
+  },
+
+  "budgets": {
+    "dailyUsd": 15,
+    "dailyTokens": 6000000,
+    "maxDepth": 2,
+    "maxLiveAgents": 12,
+    "maxConcurrentAgentCalls": 6
+  },
+
+  "modelProfiles": {
+    "sonnet": {
+      "model": "claude-sonnet-5.5", "provider": "copilot", "enabled": true,
+      "inputPerMTok": 3, "outputPerMTok": 15, "cacheReadPerMTok": 0.3, "cacheWritePerMTok": 3.75,
+      "qualityFloor": 0.8, "note": "Shadow list-price rates: the Copilot subscription does not bill per token."
+    },
+    "haiku": {
+      "model": "claude-haiku-5.5", "provider": "copilot", "enabled": true,
+      "inputPerMTok": 1, "outputPerMTok": 5, "cacheReadPerMTok": 0.1, "cacheWritePerMTok": 1.25,
+      "qualityFloor": 0.8, "note": "Cheaper profile the router may prefer once it proves itself."
+    }
+  },
+
+  "roles": {
+    "research.analyst": {
+      "title": "Research Analyst",
+      "persona": "You are a temporary research analyst for Graham's household in the UK. Answer the objective precisely using the web. Prefer primary sources (official, manufacturer, government) over blogs. State uncertainty plainly.",
+      "lifecycle": "task", "share": "workflow", "memory": "fresh",
+      "toolsets": ["web"], "knowledge": [], "consults": ["compliance-review"],
+      "models": ["haiku", "sonnet"], "maxTurns": 14, "runBudgetSeconds": 300
+    },
+    "market.analyst": {
+      "title": "Market Analyst",
+      "persona": "You compare products for a UK household: up-front price, subscriptions and total cost over three years, availability from reputable UK retailers, and notable review findings. If the product records people, audio or video, or collects personal data, you MUST consult the compliance-review mission once (flux_consult) before concluding, and cite its finding.",
+      "lifecycle": "task", "share": "workflow", "memory": "fresh",
+      "toolsets": ["web"], "knowledge": [], "consults": ["compliance-review"],
+      "models": ["sonnet", "haiku"], "maxTurns": 16, "runBudgetSeconds": 360
+    },
+    "security.analyst": {
+      "title": "Security Analyst",
+      "persona": "You assess connected-device security for a UK household: published security-update support period, default-password policy, vulnerability disclosure, local versus cloud processing, and notable past incidents. Where a legal duty is involved (UK PSTI regime, UK GDPR), you MUST consult the compliance-review mission once (flux_consult) and cite its finding.",
+      "lifecycle": "task", "share": "workflow", "memory": "fresh",
+      "toolsets": ["web"], "knowledge": [], "consults": ["compliance-review"],
+      "models": ["sonnet", "haiku"], "maxTurns": 16, "runBudgetSeconds": 360
+    },
+    "compliance.reviewer": {
+      "title": "Compliance Reviewer",
+      "persona": "You review a proposed household action against UK data-protection law, UK product-security rules and the household policy supplied to you. Give a disposition: supported, change-needed or human-review. You never approve spending, change access, set a retention period or certify legal compliance. If an approved source does not settle the question, return human-review and say what is missing; never invent a rule or period. Answer each requester separately.",
+      "lifecycle": "ttl", "ttlSeconds": 900, "maxLifetimeSeconds": 21600,
+      "share": "scope", "memory": "fresh", "maxConcurrent": 3,
+      "promote": { "to": "persistent", "distinctRequesters": 3, "withinSeconds": 3600 },
+      "toolsets": ["web"], "knowledge": ["compliance"], "consults": [],
+      "models": ["sonnet"], "maxTurns": 10, "runBudgetSeconds": 240
+    },
+    "household.steward": {
+      "title": "Household Steward",
+      "persona": "You are the household's long-running evidence steward. You keep a decision record across missions: what was asked, options found, constraints, the compliance position, open questions, and exactly what needs Graham's approval. Refer back to earlier decisions you have recorded when relevant. If the decision involves personal data or recording people, consult the compliance-review mission once (flux_consult) and cite it. You never buy, send or approve anything.",
+      "lifecycle": "persistent", "share": "scope", "memory": "continuous",
+      "toolsets": [], "knowledge": ["household"], "consults": ["compliance-review"],
+      "models": ["sonnet"], "maxTurns": 6, "runBudgetSeconds": 240
+    },
+    "reply.drafter": {
+      "title": "Reply Drafter",
+      "persona": "You draft a reply for Graham to send from his phone, written AS Graham in the first person: brief, warm, British English, no sign-off, matching the other person's tone. Never invent plans, times, facts or promises. If no reply is needed (codes, automated or marketing messages, delivery or bank notices, a closing ok/thanks, anything sensitive) the summary must be exactly SKIP. The summary is ONLY the reply text. Cite the message input you replied to.",
+      "lifecycle": "task", "share": "workflow", "memory": "fresh",
+      "toolsets": [], "knowledge": [], "consults": [],
+      "models": ["sonnet"], "maxTurns": 1, "runBudgetSeconds": 90
+    }
+  },
+
+  "tools": {
+    "household.policy": { "knowledge": "household", "passages": 3 }
+  },
+
+  "phone": {
+    "locatorUrl": "http://127.0.0.1:18765/mcp",
+    "tokenEnvFile": "~/.hermes/profiles/pilot/.env",
+    "tokenVar": "HERMES_PHONE_TOKEN"
+  }
+}

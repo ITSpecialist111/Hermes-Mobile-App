@@ -96,6 +96,12 @@ which follows the app's rule.
   hermes-reply-drafter hermes-gateway`, and restart the dashboard (as root `systemctl restart
   hermes-dashboard`). Running Hermes processes keep the old token in memory until restarted.
   This happened on 2 Nov (backups: `.env.bak-token-*`).
+- Home Assistant MCP "can't connect" (Hearth, 20 Nov): the long-lived key was fine. Home Assistant
+  had restarted for an update, so its MCP add-on dropped Hermes's session ("Session not found"), and
+  calls timed out until Hermes reconnected. Check the add-on directly (MCP `check_connection` should
+  say `connected: true`), then restart `hermes-gateway` and the dashboard so they open fresh
+  sessions. Only replace `HASS_MCP_API_KEY` if the add-on answers 401.
+- Flux (governed specialist agents) is a separate user service: see `../hermes-flux/README.md`.
 - Sideloaded app on Android 13+: to toggle the service yourself, first allow *App info → ⋮ → Allow
   restricted settings* for Hermes Mobile.
 

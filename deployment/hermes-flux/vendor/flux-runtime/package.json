@@ -1,0 +1,10 @@
+{
+  "name": "@corpgen/flux-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Portable capability resolver and bounded mission executor for generated cores",
+  "main": "./index.cjs",
+  "types": "./index.d.ts",
+  "engines": { "node": ">=20" },
+  "scripts": { "test": "node --test test/runtime.test.cjs" }
+}
