@@ -32,8 +32,50 @@ const BOT_TOOLS = [
   },
   {
     name: 'flux_ledger',
-    description: 'Summarise Flux spend and outcomes from the tamper-evident ledger (tokens, shadow cost, runs, denials, spawns, promotions).',
+    description: 'Summarise Flux spend and outcomes from the tamper-evident ledger (tokens, shadow cost, runs, denials, spawns, promotions, graded quality per model).',
     inputSchema: { type: 'object', properties: { days: { type: 'integer', minimum: 1, maximum: 31 } }, additionalProperties: false },
+  },
+  {
+    name: 'flux_plan',
+    description: 'Dry run a Flux mission with zero model calls: is it allowed, which agents would be spawned or reused, which model each would use, estimated tokens and cost (expected and with consultations), and budget warnings. Use before expensive missions or when Graham asks what something would cost.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        mission: { type: 'string' }, objective: { type: 'string' },
+        capabilities: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['mission', 'objective'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'flux_approvals',
+    description: "List Graham's approval queue: findings that needed his decision and requests you made. Shows pending, approved, denied or expired, with his note. Check this before acting on anything that needed approval.",
+    inputSchema: { type: 'object', properties: { status: { type: 'string', enum: ['pending', 'approved', 'denied', 'expired'] }, mine: { type: 'boolean', description: 'Only approvals you requested.' } }, additionalProperties: false },
+  },
+  {
+    name: 'flux_request_approval',
+    description: "Ask Graham to approve or deny something. It appears as an Allow/Deny notification on his phone and on the Flux Live Map. Returns an approval id; check it later with flux_approvals. Use for purchases over £100, new subscriptions, or anything the household rules reserve for him.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short question, e.g. "Buy the Aqara G400 doorbell for £99.99?"' },
+        summary: { type: 'string', description: 'What he needs to know to decide, including cost and any caveats.' },
+        runId: { type: 'string', description: 'Optional Flux run id the request is based on.' },
+      },
+      required: ['title', 'summary'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'flux_memory',
+    description: 'Show what persistent Flux agents remember: memory rules, when their memory started, calls since the last rotation, and their carried-over digest.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'flux_forget',
+    description: "Make a persistent Flux agent forget: everything, or one topic (it rewrites its memory without it). Only for bots the operator allows. Use when Graham asks an agent to forget something.",
+    inputSchema: { type: 'object', properties: { agentId: { type: 'string' }, topic: { type: 'string' } }, required: ['agentId'], additionalProperties: false },
   },
 ];
 
@@ -73,7 +115,7 @@ function compactRun(result) {
     mission: result.mission,
     findings: result.findings.map(f => ({
       capabilityId: f.capabilityId, agentId: f.agentId, lifecycle: f.lifecycle, disposition: f.disposition,
-      summary: f.summary, sources: f.sources,
+      summary: f.summary, sources: f.sources, ...(f.approval ? { approval: f.approval } : {}),
     })),
     agents: result.events.filter(e => e.agentId).map(e => `${e.kind} ${e.agentId}`),
     usage: result.usage,
@@ -82,18 +124,31 @@ function compactRun(result) {
 }
 
 function createTools(flux) {
-  const { engine, registry, ledger } = flux;
+  const { engine, registry, ledger, approvals, policy } = flux;
+  const canForget = id => (policy.memoryAdmins || []).includes(id);
   return {
     list(caller) { return caller.kind === 'bot' ? BOT_TOOLS : AGENT_TOOLS; },
     async call(caller, name, args) {
       if (caller.kind === 'bot') {
-        if (name === 'flux_missions') return { missions: engine.missionsFor({ kind: 'bot', id: caller.id }), liveAgents: registry.snapshot().map(a => `${a.id} (${a.lifecycle}, ${a.state})`) };
+        const requester = { kind: 'bot', id: caller.id };
+        if (name === 'flux_missions') return { missions: engine.missionsFor(requester), liveAgents: registry.snapshot().map(a => `${a.id} (${a.lifecycle}, ${a.state})`) };
         if (name === 'flux_run') {
           const capabilities = Array.isArray(args.capabilities) && args.capabilities.length ? args.capabilities : undefined;
-          return compactRun(await engine.run({ mission: args.mission, objective: args.objective, capabilities, workflow: args.workflow, inputs: args.inputs || [], requester: { kind: 'bot', id: caller.id } }));
+          return compactRun(await engine.run({ mission: args.mission, objective: args.objective, capabilities, workflow: args.workflow, inputs: args.inputs || [], requester }));
+        }
+        if (name === 'flux_plan') {
+          const capabilities = Array.isArray(args.capabilities) && args.capabilities.length ? args.capabilities : undefined;
+          return engine.preview({ mission: args.mission, objective: args.objective, capabilities, requester });
         }
         if (name === 'flux_agents') return { frozen: registry.frozen, agents: registry.snapshot() };
         if (name === 'flux_ledger') return { ...ledger.summary(Math.min(31, Math.max(1, args.days || 1))), chain: ledger.verify() };
+        if (name === 'flux_approvals') return { approvals: approvals.list({ status: args.status, requester: args.mine ? `bot:${caller.id}` : undefined }).slice(0, 20) };
+        if (name === 'flux_request_approval') return engine.requestApproval({ title: args.title, summary: args.summary, runId: args.runId, requester: `bot:${caller.id}` });
+        if (name === 'flux_memory') return { agents: engine.memoryStatus() };
+        if (name === 'flux_forget') {
+          if (!canForget(caller.id)) throw new Error(`Flux: ${caller.id} may not change agent memory`);
+          return engine.forget(args.agentId, { topic: args.topic, by: `bot:${caller.id}` });
+        }
       } else if (name === 'flux_consult') {
         const ticket = caller.ticket || args.ticket;
         return engine.consult(ticket, { mission: args.mission, question: args.question });

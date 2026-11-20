@@ -30,6 +30,7 @@ if [[ ! -f "$FLUX/flux.env" ]]; then
   umask 077
   printf 'HERMES_FLUX_TOKEN=%s\nFLUX_VIEW_KEY=%s\n' "$(openssl rand -hex 24)" "$(openssl rand -hex 12)" > "$FLUX/flux.env"
 fi
+grep -q '^FLUX_APPROVE_KEY=' "$FLUX/flux.env" || printf 'FLUX_APPROVE_KEY=%s\n' "$(openssl rand -hex 16)" >> "$FLUX/flux.env"
 chmod 600 "$FLUX/flux.env"
 TOKEN=$(grep -E '^HERMES_FLUX_TOKEN=' "$FLUX/flux.env" | cut -d= -f2-)
 
@@ -107,4 +108,6 @@ systemctl --user enable hermes-flux >/dev/null 2>&1
 systemctl --user restart hermes-flux
 sleep 2
 systemctl --user --no-pager --lines=3 status hermes-flux | sed -n '1,6p'
-echo "Live Map: http://$(hostname -I | awk '{print $1}'):18791/?key=$(grep -E '^FLUX_VIEW_KEY=' "$FLUX/flux.env" | cut -d= -f2-)"
+echo "Live Map (view only):     http://$(hostname -I | awk '{print $1}'):18791/?key=$(grep -E '^FLUX_VIEW_KEY=' "$FLUX/flux.env" | cut -d= -f2-)"
+echo "Phone link (with approvals): add &approve=$(grep -E '^FLUX_APPROVE_KEY=' "$FLUX/flux.env" | cut -d= -f2-) and paste it into Settings → Flux agents"
+echo "Federation key id: $(flux-ctl federation 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["keyId"])' 2>/dev/null || echo '(starting)')"

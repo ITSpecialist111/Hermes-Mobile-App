@@ -83,15 +83,26 @@ class Registry {
 
   live() { return [...this.agents.values()].filter(a => a.state !== 'retired'); }
 
+  shareKeyFor(roleId, role, brief) {
+    return (role.share || 'workflow') === 'scope' ? `scope:${brief.scopeId}:${roleId}` : `workflow:${brief.workflowKey}:${roleId}`;
+  }
+
+  /** The live agent a call would reuse, without side effects (used by dry runs too). */
+  findReusable(roleId, brief) {
+    const role = this.role(roleId);
+    const key = this.shareKeyFor(roleId, role, brief);
+    return this.live().find(a => a.shareKey === key && a.policyRevision === this.policy.policyRevision
+      && (a.users < (role.maxConcurrent ?? 2) || a.memory === 'continuous')) || null;
+  }
+
   acquire(roleId, brief) {
     if (this.frozen) throw new Error('Flux: runtime frozen by operator');
     const role = this.role(roleId);
     const share = role.share || 'workflow';
-    const key = share === 'scope' ? `scope:${brief.scopeId}:${roleId}` : `workflow:${brief.workflowKey}:${roleId}`;
+    const key = this.shareKeyFor(roleId, role, brief);
     const revision = this.policy.policyRevision;
     const now = this.now();
-    let agent = this.live().find(a => a.shareKey === key && a.policyRevision === revision
-      && (a.users < (role.maxConcurrent ?? 2) || a.memory === 'continuous'));
+    let agent = this.findReusable(roleId, brief);
     if (agent) {
       this.record(brief, 'agent-reused', agent, { requester: brief.requesterId });
     } else {
@@ -178,12 +189,14 @@ class Registry {
         } else usage = { ...ZERO(), ...out.tokens };
         usage.total = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
         if (agent.memory === 'continuous') {
+          if (!agent.hermesSession || agent.hermesSession !== out.sessionId) agent.memorySince = this.now();
           agent.hermesSession = out.sessionId;
           agent.usageBase = out.cumulative || null;
+          if (!job.housekeeping) agent.callsSinceRotation = (agent.callsSinceRotation || 0) + 1;
         } else if (out.sessionId && !role.keepTranscript) {
           this.runner.discard(out.sessionId).catch(() => {});
         }
-        agent.calls++;
+        if (!job.housekeeping) agent.calls++;
         this.save();
         return { ...out, usage };
       } finally {
@@ -195,6 +208,17 @@ class Registry {
     const turn = (this.chains.get(agent.id) || Promise.resolve()).catch(() => {}).then(run);
     this.chains.set(agent.id, turn);
     return turn;
+  }
+
+  /** Drop the agent's Hermes session (its working memory) and optionally carry a digest forward. */
+  replaceMemory(agent, digest) {
+    if (agent.hermesSession) this.runner.discard(agent.hermesSession).catch(() => {});
+    agent.hermesSession = null;
+    agent.usageBase = null;
+    agent.memoryDigest = digest || null;
+    agent.memorySince = digest ? this.now() : null;
+    agent.callsSinceRotation = 0;
+    this.save();
   }
 
   account(agent, tokens, costUsd) {
@@ -218,6 +242,8 @@ class Registry {
       ttlRemainingSeconds: a.expiresAt ? Math.max(0, Math.round((a.expiresAt - now) / 1000)) : null,
       distinctRequesters: new Set(a.requesters.map(r => r.id)).size, promotedAt: a.promotedAt ? new Date(a.promotedAt).toISOString() : null,
       toolsets: a.toolsets, knowledge: a.knowledge, consults: a.consults, hasMemory: Boolean(a.hermesSession),
+      memoryDigest: Boolean(a.memoryDigest), callsSinceRotation: a.callsSinceRotation || 0,
+      memorySince: a.memorySince ? new Date(a.memorySince).toISOString() : null,
     }));
   }
 }

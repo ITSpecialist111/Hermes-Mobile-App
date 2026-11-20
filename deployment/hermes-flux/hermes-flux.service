@@ -1,5 +1,5 @@
 [Unit]
-Description=Hermes Flux: governed specialist agents (MCP 127.0.0.1:18790, Live Map :18791)
+Description=Hermes Flux: governed specialist agents (MCP 127.0.0.1:18790, Live Map :18791, federation :18792)
 After=network-online.target
 
 [Service]

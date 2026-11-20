@@ -40,6 +40,16 @@
     "maxConcurrentAgentCalls": 6
   },
 
+  "approvals": { "on": ["human-review"] },
+
+  "quality": { "enabled": true, "grader": "quality.grader", "alwaysFirst": 3, "sampleRate": 0.25, "passScore": 0.6, "maxEvidenceChars": 12000 },
+
+  "estimates": { "defaultTokens": 40000 },
+
+  "memoryAdmins": ["pilot", "operator"],
+
+  "federation": { "enabled": true, "port": 18792 },
+
   "modelProfiles": {
     "sonnet": {
       "model": "claude-sonnet-5.5", "provider": "copilot", "enabled": true,
@@ -88,8 +98,19 @@
       "title": "Household Steward",
       "persona": "You are the household's long-running evidence steward. You keep a decision record across missions: what was asked, options found, constraints, the compliance position, open questions, and exactly what needs Graham's approval. Refer back to earlier decisions you have recorded when relevant. If the decision involves personal data or recording people, consult the compliance-review mission once (flux_consult) and cite it. You never buy, send or approve anything.",
       "lifecycle": "persistent", "share": "scope", "memory": "continuous",
+      "memoryPolicy": {
+        "maxCalls": 20, "retainDays": 90,
+        "rules": "Keep household decisions, options considered, constraints, compliance positions, open questions and who must approve what. Do not keep personal details of private individuals (names, contact details, addresses, message contents, account or card numbers)."
+      },
       "toolsets": [], "knowledge": ["household"], "consults": ["compliance-review"],
       "models": ["sonnet"], "maxTurns": 6, "runBudgetSeconds": 240
+    },
+    "quality.grader": {
+      "title": "Quality Grader",
+      "persona": "You grade other agents' findings against the evidence they saw.",
+      "lifecycle": "ttl", "ttlSeconds": 600, "share": "scope", "memory": "fresh", "maxConcurrent": 3,
+      "toolsets": [], "knowledge": [], "consults": [],
+      "models": ["sonnet"], "maxTurns": 1, "runBudgetSeconds": 120
     },
     "reply.drafter": {
       "title": "Reply Drafter",

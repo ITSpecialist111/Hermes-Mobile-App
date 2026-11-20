@@ -8,10 +8,14 @@ const { createFlux } = require('../src/app.cjs');
 const { chooseProfile } = require('../src/router.cjs');
 
 const APP = path.join(__dirname, '..');
-const basePolicy = () => JSON.parse(fs.readFileSync(path.join(APP, 'operator', 'policy.json'), 'utf8'));
+const basePolicy = ({ grading = false } = {}) => {
+  const policy = JSON.parse(fs.readFileSync(path.join(APP, 'operator', 'policy.json'), 'utf8'));
+  policy.quality.enabled = grading;
+  return policy;
+};
 
 /** Fake Hermes: answers per role, optionally consulting through the ticket in the role contract. */
-function fakeRunner({ consult, cite, usage = 1000 } = {}) {
+function fakeRunner({ consult, cite, dispositions, usage = 1000, gradeScore = 0.9, digest = '- 2026-11-20 chose the Aqara G400; ask bob@example.com or 07700 900123' } = {}) {
   const calls = [];
   let n = 0;
   const runner = {
@@ -20,6 +24,9 @@ function fakeRunner({ consult, cite, usage = 1000 } = {}) {
     async run({ roleId, prompt, resume, ticket }) {
       calls.push({ roleId, resume, prompt });
       const sessionId = resume || `s${++n}`;
+      const base = { sessionId, tokens: { input: usage, output: usage / 10 }, cumulative: null, evidence: 'fetched https://example.org/spec', durationMs: 5 };
+      if (prompt.startsWith('FLUX MEMORY DIGEST')) return { ...base, text: digest };
+      if (roleId === 'quality.grader') return { ...base, text: JSON.stringify({ score: gradeScore, answersObjective: true, supportedBySources: gradeScore >= 0.6, issues: [] }) };
       const refs = [];
       if (consult?.[roleId]) refs.push(...(await consult[roleId](ticket)));
       const knowledge = (prompt.match(/\[(knowledge:[^\]]+)\]/) || [])[1];
@@ -27,7 +34,7 @@ function fakeRunner({ consult, cite, usage = 1000 } = {}) {
       const sources = cite?.[roleId] || [...refs, knowledge, input && `input:${input}`, 'https://example.org/spec'].filter(Boolean);
       return {
         sessionId,
-        text: JSON.stringify({ summary: `${roleId} finding`, sources, disposition: roleId === 'compliance.reviewer' ? 'change-needed' : 'info' }),
+        text: JSON.stringify({ summary: `${roleId} finding`, sources, disposition: dispositions?.[roleId] || (roleId === 'compliance.reviewer' ? 'change-needed' : 'info') }),
         tokens: { input: usage, output: usage / 10 },
         cumulative: null,
         evidence: 'fetched https://example.org/spec',
@@ -179,4 +186,101 @@ test('router explores cold profiles, then picks the cheapest qualifying one, and
   assert.equal(chooseProfile(role, profiles, id => stats[id]).id, 'dear', 'cheap is below its quality floor');
   stats.dear.ok = 2;
   assert.throws(() => chooseProfile(role, profiles, id => stats[id]), /quality floor/);
+});
+
+test('approvals: a human-review finding asks Graham; decisions are recorded once and notes stay out of the ledger', async () => {
+  const flux = setup({ runner: fakeRunner({ dispositions: { 'compliance.reviewer': 'human-review' } }) });
+  const result = await flux.engine.run({ mission: 'compliance-review', objective: 'Keep doorbell clips for 90 days?', requester: bot('pilot') });
+  const finding = result.findings.find(f => f.capabilityId === 'compliance.reviewer');
+  assert.equal(finding.approval.status, 'pending');
+  flux.approvals.decide(finding.approval.id, { decision: 'denied', by: 'graham:phone', note: '30 days max' });
+  assert.throws(() => flux.approvals.decide(finding.approval.id, { decision: 'approved', by: 'x' }), /already denied/);
+  const asked = flux.engine.requestApproval({ title: 'Buy the Aqara G400 for £99.99?', summary: 'Cheapest option that meets the rules.', requester: 'bot:pilot' });
+  assert.equal(asked.status, 'pending');
+  assert.deepEqual(flux.ledger.records.filter(r => r.type === 'approval').map(r => r.event), ['requested', 'decided', 'requested']);
+  assert.ok(!fs.readFileSync(path.join(flux.stateDir, 'ledger.jsonl'), 'utf8').includes('30 days max'));
+});
+
+test('grading: sampled findings are graded in the background and a failed grade counts against the model', async () => {
+  const flux = setup({ policy: basePolicy({ grading: true }), runner: fakeRunner({ gradeScore: 0.3 }) });
+  await flux.engine.run({ mission: 'research', objective: 'q', requester: bot('pilot') });
+  await flux.engine.settle();
+  const grade = flux.ledger.records.find(r => r.type === 'grade');
+  assert.equal(grade.capabilityId, 'research.analyst');
+  assert.equal(grade.pass, false);
+  const stats = flux.ledger.profileStats('research.analyst', grade.profile);
+  assert.deepEqual([stats.n, stats.ok, stats.graded], [1, 0, 1], 'grounded but failed its grade');
+  assert.equal(flux.ledger.summary().quality[grade.profile].graded, 1);
+  assert.match(flux.runner.calls.find(c => c.roleId === 'quality.grader').prompt, /fetched https:\/\/example\.org\/spec/, 'grader sees what the agent saw');
+});
+
+test('memory: rotation writes a scrubbed digest the next call carries; forget leaves only a hash', async () => {
+  const policy = basePolicy();
+  policy.roles['household.steward'].memoryPolicy.maxCalls = 2;
+  const flux = setup({ policy });
+  for (const objective of ['a', 'b', 'c']) await flux.engine.run({ mission: 'steward-log', objective, requester: bot('pilot') });
+  const steward = flux.registry.live().find(a => a.roleId === 'household.steward');
+  assert.match(steward.memoryDigest, /\[email\].*\[phone\]/);
+  assert.doesNotMatch(steward.memoryDigest, /bob@|07700/);
+  const calls = flux.runner.calls.filter(c => c.roleId === 'household.steward');
+  assert.match(calls[2].prompt, /^FLUX MEMORY DIGEST/);
+  assert.equal(calls[3].resume, null, 'fresh session after rotation');
+  assert.match(calls[3].prompt, /MEMORY DIGEST \(written by you/);
+  assert.ok(flux.runner.discarded.includes(calls[2].resume), 'old session deleted');
+  await flux.engine.forget(steward.id, { topic: 'Aqara doorbell', by: 'bot:pilot' });
+  const record = flux.ledger.records.filter(r => r.type === 'memory').pop();
+  assert.equal(record.event, 'forgot-topic');
+  assert.ok(record.topicHash && !JSON.stringify(record).includes('Aqara'));
+  await flux.engine.forget(steward.id, { by: 'bot:pilot' });
+  assert.equal(flux.registry.agents.get(steward.id).memoryDigest, null);
+});
+
+test('dry run: spawn or reuse, model and cost estimates, zero model calls', async () => {
+  const flux = setup();
+  await flux.engine.run({ mission: 'compliance-review', objective: 'seed history', requester: bot('pilot') });
+  const before = flux.runner.calls.length;
+  const plan = flux.engine.preview({ mission: 'purchase-review', objective: 'doorbell', requester: bot('pilot') });
+  assert.equal(plan.allowed, true);
+  assert.equal(flux.runner.calls.length, before);
+  assert.equal(plan.stages.flat().find(s => s.capabilityId === 'market.analyst').agent, 'spawn new task agent');
+  assert.equal(plan.consults[0].mission, 'compliance-review');
+  assert.ok(plan.upperBound.costUsd > plan.expected.costUsd);
+  assert.match(flux.engine.preview({ mission: 'compliance-review', objective: 'x', requester: bot('pilot') }).stages[1][0].agent, /^reuse compliance\.reviewer#/);
+  assert.equal(flux.engine.preview({ mission: 'purchase-review', objective: 'x', requester: bot('forge') }).allowed, false);
+});
+
+test('federation: a peer with a signed grant runs missions; replays, other keys, other missions and revoked grants are refused', async () => {
+  const fed = require('../src/federation.cjs');
+  const { compactRun } = require('../src/mcp.cjs');
+  const host = setup();
+  const hostKey = fed.loadOrCreateHostKey(host.stateDir);
+  const gate = new fed.FederationGate({ hostKey, file: path.join(host.stateDir, 'federation.json') });
+  const handler = fed.createFederationHandler({ gate, engine: host.engine, coreId: 'hermes-home', compact: compactRun });
+  const fetchImpl = async (url, init) => {
+    const headers = Object.fromEntries(Object.entries(init.headers).map(([k, v]) => [k.toLowerCase(), v]));
+    const out = await handler(init.method, new URL(url).pathname, headers, init.body);
+    return new Response(out.body, { status: out.status, headers: out.headers });
+  };
+  const url = 'http://host:18792';
+  const peer = fed.generateKeys();
+  const { token, grant } = gate.issue({ issuer: 'hermes-home', peerId: 'office-core', peerKey: peer.publicKey, missions: ['research'], maxUsdPerDay: 1 });
+  const call = (extra = {}) => fed.callPeer({ url, grant: token, privateKey: peer.privateKeyPem, mission: 'research', objective: 'q', peerHostKey: hostKey.publicKey, fetchImpl, ...extra });
+
+  const result = await call();
+  assert.equal(result.findings[0].capabilityId, 'research.analyst');
+  assert.equal(host.ledger.records.filter(r => r.type === 'run').pop().requester, 'peer:office-core');
+  await assert.rejects(call({ mission: 'purchase-review' }), /not in peer office-core's grant/);
+  await assert.rejects(call({ privateKey: fed.generateKeys().privateKeyPem }), /does not match the grant/);
+
+  const body = JSON.stringify({ mission: 'research', objective: 'q' });
+  const signed = fed.signRequest(require('node:crypto').createPrivateKey(peer.privateKeyPem), body);
+  const headers = { 'x-flux-grant': token, 'x-flux-timestamp': signed.ts, 'x-flux-nonce': signed.nonce, 'x-flux-signature': signed.signature };
+  assert.equal((await handler('POST', '/federation/run', headers, body)).status, 200);
+  assert.match((await handler('POST', '/federation/run', headers, body)).body, /replayed/);
+
+  const binding = fed.createPeerBinding({ capabilityIds: ['peer.research'], url, grant: token, privateKey: peer.privateKeyPem, mission: 'research', peerHostKey: hostKey.publicKey, objectiveFor: () => ({ objective: 'q', inputs: [] }), fetchImpl });
+  assert.match((await binding.execute({})).sources[0], /^flux-peer:hermes-home\/run-/);
+
+  gate.revoke(grant.grantId);
+  await assert.rejects(call(), /revoked/);
 });

@@ -3,6 +3,11 @@
 // flux-ctl: operator CLI for the hermes-flux service (reads HERMES_FLUX_TOKEN from ~/.hermes/flux/flux.env).
 //   flux-ctl status | agents | missions [--bot pilot] | ledger [--days 7] | verify
 //   flux-ctl run <mission> <objective...> [--bot operator] [--cap id ...] [--full]
+//   flux-ctl plan <mission> <objective...>          dry run (no model calls)
+//   flux-ctl approvals [status] | approve|deny <id> [note] | ask "<title>" <summary...>
+//   flux-ctl memory | rotate <agentId> | forget <agentId> [topic]
+//   flux-ctl federation | grant <peerId> <key|keyfile> --missions a,b [--days 30] [--usd 1] | revoke <grantId>
+//   flux-ctl peer-keygen <file> | peer-call <url> <grant-file> <key-file> <mission> <objective...> [--host-key k]
 //   flux-ctl freeze | unfreeze | retire <agentId>
 const fs = require('node:fs');
 const os = require('node:os');
@@ -49,8 +54,36 @@ async function main(argv) {
     const full = args.includes('--full');
     const [mission, ...words] = args.filter(a => a !== '--full');
     out = await call('POST', `/api/run${full ? '?full' : ''}`, { mission, objective: words.join(' '), capabilities }, bot);
+  } else if (command === 'plan') {
+    const [mission, ...words] = args;
+    out = await call('POST', '/api/plan', { mission, objective: words.join(' ') }, bot);
+  } else if (command === 'approvals') out = await call('GET', `/api/approvals${args[0] ? `?status=${args[0]}` : ''}`);
+  else if (command === 'approve' || command === 'deny') out = await call('POST', '/api/approvals', { id: args[0], decision: command === 'approve' ? 'approved' : 'denied', note: args.slice(1).join(' ') || undefined });
+  else if (command === 'ask') out = await call('POST', '/api/approvals', { title: args[0], summary: args.slice(1).join(' ') }, bot);
+  else if (command === 'memory') out = await call('GET', '/api/memory');
+  else if (command === 'forget') out = await call('POST', '/api/memory', { action: 'forget', agentId: args[0], topic: args.slice(1).join(' ') || undefined });
+  else if (command === 'rotate') out = await call('POST', '/api/memory', { action: 'rotate', agentId: args[0] });
+  else if (command === 'federation') out = await call('GET', '/api/federation');
+  else if (command === 'grant') {
+    const missions = option(args, '--missions', '').split(',').filter(Boolean);
+    const days = Number(option(args, '--days', '30')), maxUsdPerDay = Number(option(args, '--usd', '1'));
+    const [peerId, keyFile] = args;
+    const peerKey = fs.existsSync(keyFile) ? JSON.parse(fs.readFileSync(keyFile, 'utf8')).publicKey : keyFile;
+    out = await call('POST', '/api/federation', { action: 'grant', peerId, peerKey, missions, days, maxUsdPerDay });
+  } else if (command === 'revoke') out = await call('POST', '/api/federation', { action: 'revoke', grantId: args[0] });
+  else if (command === 'peer-keygen') {
+    // Run on the PEER: creates its key pair; send only publicKey to the host that will grant access.
+    const { generateKeys } = require('../src/federation.cjs');
+    fs.writeFileSync(args[0], JSON.stringify(generateKeys(), null, 2), { mode: 0o600 });
+    out = { wrote: args[0], publicKey: JSON.parse(fs.readFileSync(args[0], 'utf8')).publicKey };
+  } else if (command === 'peer-call') {
+    // flux-ctl peer-call <http://host:18792> <grant-token-file> <peer-key-file> <mission> <objective...> [--host-key <base64>]
+    const { callPeer } = require('../src/federation.cjs');
+    const peerHostKey = option(args, '--host-key');
+    const [url, grantFile, keyFile, mission, ...words] = args;
+    out = await callPeer({ url, grant: fs.readFileSync(grantFile, 'utf8').trim(), privateKey: JSON.parse(fs.readFileSync(keyFile, 'utf8')).privateKeyPem, mission, objective: words.join(' '), peerHostKey });
   } else {
-    console.error('usage: flux-ctl status|agents|missions|ledger|verify|run|freeze|unfreeze|retire');
+    console.error('usage: flux-ctl status|agents|missions|ledger|verify|run|plan|approvals|approve|deny|ask|memory|forget|rotate|federation|grant|revoke|peer-keygen|peer-call|freeze|unfreeze|retire');
     process.exitCode = 2;
     return;
   }

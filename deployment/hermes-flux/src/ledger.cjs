@@ -112,20 +112,55 @@ class Ledger {
       }
       return groups;
     };
-    return { days, totals: this.totals(records), byCapability: by('capabilityId'), byProfile: by('profile'), byRequester: by('rootRequester') };
+    return { days, totals: this.totals(records), byCapability: by('capabilityId'), byProfile: by('profile'), byRequester: by('rootRequester'), quality: this.quality() };
   }
 
-  /** Router observations for one capability and model profile. */
+  /** Router observations for one capability and model profile. A graded step counts as a success only if it passed. */
   profileStats(capabilityId, profileId) {
-    let n = 0, ok = 0, cost = 0, ms = 0;
+    const grades = this.gradesFor(capabilityId);
+    let n = 0, ok = 0, cost = 0, ms = 0, graded = 0, scoreSum = 0;
     for (const r of this.records) {
       if (r.type !== 'step' || r.capabilityId !== capabilityId || r.profile !== profileId) continue;
       n++;
-      if (r.outcome === 'ok') ok++;
+      const grade = grades.get(r.runId);
+      if (grade) { graded++; scoreSum += grade.score; }
+      if (r.outcome === 'ok' && (!grade || grade.pass)) ok++;
       cost += r.costUsd || 0;
       ms += r.durationMs || 0;
     }
-    return { n, ok, avgCostUsd: n ? cost / n : 0, avgMs: n ? ms / n : 0 };
+    return { n, ok, avgCostUsd: n ? cost / n : 0, avgMs: n ? ms / n : 0, graded, avgScore: graded ? scoreSum / graded : null };
+  }
+
+  gradesFor(capabilityId) {
+    const out = new Map();
+    for (const r of this.records) if (r.type === 'grade' && r.capabilityId === capabilityId) out.set(r.runId, r);
+    return out;
+  }
+
+  gradeCount(capabilityId, profileId) {
+    return this.records.filter(r => r.type === 'grade' && r.capabilityId === capabilityId && r.profile === profileId).length;
+  }
+
+  /** Dry-run estimate from history: mean tokens and cost of earlier steps for this capability (and profile, if seen). */
+  estimate(capabilityId, profileId) {
+    const steps = this.records.filter(r => r.type === 'step' && r.capabilityId === capabilityId && r.outcome !== 'error');
+    const exact = steps.filter(r => r.profile === profileId);
+    const sample = exact.length ? exact : steps;
+    if (!sample.length) return null;
+    const mean = f => sample.reduce((s, r) => s + f(r), 0) / sample.length;
+    return { tokens: Math.round(mean(r => r.tokens?.total || 0)), usd: mean(r => r.costUsd || 0), samples: sample.length, basis: exact.length ? 'same profile' : 'other profiles' };
+  }
+
+  quality() {
+    const out = {};
+    for (const r of this.records.filter(x => x.type === 'grade')) {
+      const g = out[r.profile] ||= { graded: 0, passed: 0, avgScore: 0 };
+      g.avgScore = (g.avgScore * g.graded + r.score) / (g.graded + 1);
+      g.graded++;
+      if (r.pass) g.passed++;
+    }
+    for (const g of Object.values(out)) g.avgScore = Math.round(g.avgScore * 100) / 100;
+    return out;
   }
 }
 

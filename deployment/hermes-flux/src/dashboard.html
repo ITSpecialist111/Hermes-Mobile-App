@@ -35,6 +35,14 @@
   td, th { text-align:left; padding:4px 2px; border-bottom:1px solid var(--line); }
   th { color:var(--dim); font-weight:500; }
   #detail { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; font-size:12px; display:none; }
+  .approval { background:var(--panel); border:1px solid #6b5b1f; border-radius:10px; padding:10px; margin-bottom:8px; font-size:12px; }
+  .approval b { display:block; font-size:13px; margin-bottom:4px; }
+  .approval p { margin:6px 0; color:var(--dim); white-space:pre-wrap; max-height:9em; overflow:auto; }
+  .approval .actions { display:flex; gap:8px; }
+  .approval button { flex:1; padding:8px; border-radius:8px; border:1px solid var(--line); background:#1b2333; color:var(--text); font:inherit; }
+  .approval button.yes { border-color:var(--core); color:var(--core); }
+  .approval button.no { border-color:var(--bad); color:var(--bad); }
+  .approval.decided { opacity:.6; border-color:var(--line); }
   svg text { fill:var(--text); font-size:calc(11px * var(--k, 1)); }
   svg .label-dim { fill:var(--dim); font-size:calc(10px * var(--k, 1)); }
   .pulse { animation:pulse 1.6s ease-in-out infinite; }
@@ -58,6 +66,10 @@
   <svg id="map" viewBox="-500 -400 1000 800" role="img" aria-label="Flux agents around the Hermes core"></svg>
   <aside>
     <div id="detail"></div>
+    <section id="approvals-box" hidden>
+      <h2>Needs your decision</h2>
+      <div id="approvals"></div>
+    </section>
     <h2>Today</h2>
     <div class="stats" id="stats"></div>
     <h2>Daily budget</h2>
@@ -166,8 +178,10 @@ function panel(v) {
   document.getElementById('stats').innerHTML = [
     [short(t.tokens), 'tokens'], [money(t.costUsd), 'shadow cost'], [t.runs, 'runs'],
     [t.modelCalls, 'agent calls'], [t.denied, 'denied'], [`${t.spawned}/${t.retired}`, 'spawned/retired'],
-    [t.promoted, 'promoted'], [v.agents.length, 'live agents'], [t.failed, 'failed'],
+    [t.promoted, 'promoted'], [v.agents.length, 'live agents'], [v.approvalsPending ?? 0, 'awaiting you'],
   ].map(([b, s]) => `<div class="stat"><b>${esc(b)}</b><span>${esc(s)}</span></div>`).join('');
+  const q = v.week.quality || {};
+  document.getElementById('stats').innerHTML += Object.entries(q).map(([p, g]) => `<div class="stat"><b>${Math.round(g.avgScore * 100)}%</b><span>${esc(p)} quality · ${g.passed}/${g.graded} pass</span></div>`).join('');
   const b = v.budgets || {};
   document.getElementById('budget').innerHTML = `
     ${money(t.costUsd)} of ${money(b.dailyUsd)}<div class="bar"><i style="width:${Math.min(100, 100 * t.costUsd / (b.dailyUsd || 1))}%"></i></div>
@@ -181,10 +195,38 @@ function panel(v) {
     if (r.type === 'agent') text = `${r.event.replace('agent-', '')} <b>${esc(r.agentId)}</b>${r.from ? ` ${esc(r.from)} → ${esc(r.to)}` : ''}${r.reason ? ` · ${esc(r.reason)}` : ''}`;
     else if (r.type === 'step') text = `<span class="${r.outcome === 'ok' ? 'ok' : 'bad'}">${esc(r.outcome)}</span> ${esc(r.capabilityId)}${r.agentId ? '' : ' (tool)'} · ${short(r.tokens || 0)} tok · ${money(r.costUsd)}${r.profile ? ' · ' + esc(r.profile) : ''}${r.consults ? ` · ${r.consults} consult` : ''}`;
     else if (r.type === 'run') text = `<span class="${r.outcome === 'ok' ? 'ok' : 'bad'}">${esc(r.outcome)}</span> run ${esc(r.mission)} by ${esc(r.requester)}${r.depth ? ' (consult)' : ''}${r.reason ? ' · ' + esc(r.reason) : ''}`;
+    else if (r.type === 'grade') text = `graded ${esc(r.capabilityId)} (${esc(r.profile)}) <span class="${r.pass ? 'ok' : 'bad'}">${Math.round(r.score * 100)}%</span>`;
+    else if (r.type === 'approval') text = `approval ${esc(r.event)}${r.decision ? ` <span class="${r.decision === 'approved' ? 'ok' : 'bad'}">${esc(r.decision)}</span>` : ''} · ${esc(r.approvalId)}`;
+    else if (r.type === 'memory') text = `memory ${esc(r.event)} <b>${esc(r.agentId)}</b>${r.redactions ? ` · ${r.redactions} redacted` : ''}`;
+    else if (r.type === 'plan') text = `dry run ${esc(r.mission)} by ${esc(r.requester)} · ${r.allowed ? `≈ ${money(r.expectedUsd)} (≤ ${money(r.upperUsd)})` : '<span class="bad">would be refused</span>'}`;
+    else if (r.type === 'federation') text = `federation ${esc(r.event)} ${esc(r.peerId || '')} ${esc(r.grantId || '')}`;
     else text = `${esc(r.type)} ${esc(r.action || '')}`;
     return `<li><time>${time}</time><span>${text}</span></li>`;
   }).join('');
 }
+
+async function loadApprovals() {
+  const box = document.getElementById('approvals-box');
+  if (!last?.canApprove) { box.hidden = true; return; }
+  const res = await fetch('/api/approvals' + location.search, { cache: 'no-store' });
+  if (!res.ok) return;
+  const { approvals } = await res.json();
+  const shown = approvals.filter(a => a.status === 'pending' || Date.now() - Date.parse(a.decidedAt || a.createdAt) < 3600000).slice(0, 8);
+  box.hidden = !shown.length;
+  document.getElementById('approvals').innerHTML = shown.map(a => `<div class="approval ${a.status === 'pending' ? '' : 'decided'}">
+    <b>${esc(a.title)}</b><span class="tag">${esc(a.requester)} · ${new Date(a.createdAt).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</span>
+    <p>${esc(a.summary)}</p>
+    ${a.status === 'pending' ? `<div class="actions"><button class="yes" data-id="${esc(a.id)}" data-d="approved">Approve</button><button class="no" data-id="${esc(a.id)}" data-d="denied">Deny</button></div>` : `<span class="${a.status === 'approved' ? 'ok' : 'bad'}">${esc(a.status)}</span>`}
+  </div>`).join('');
+}
+
+document.getElementById('approvals').addEventListener('click', async event => {
+  const button = event.target.closest('button[data-id]');
+  if (!button) return;
+  button.disabled = true;
+  await fetch('/api/approvals' + location.search, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: button.dataset.id, decision: button.dataset.d, via: 'live-map' }) });
+  loadApprovals();
+});
 
 async function tick() {
   try {
@@ -192,6 +234,7 @@ async function tick() {
     if (!res.ok) throw new Error(res.status);
     last = await res.json();
     draw(last); panel(last); showDetail();
+    loadApprovals().catch(() => {});
   } catch (e) {
     document.getElementById('state').textContent = 'offline';
   }

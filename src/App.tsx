@@ -34,6 +34,7 @@ import { applyFoldState, bookColumns, FLAT, watchFoldState, type FoldState } fro
 import { createApprovalBroker, type ApprovalChoice, type ApprovalRequest } from './approvals'
 import { ApprovalSheet } from './components/ApprovalSheet'
 import { clearApprovalNotification, listenForApprovalActions, postApprovalNotification } from './notification-service'
+import { decideFluxApproval, FLUX_REQUEST_PREFIX, watchFluxApprovals } from './flux'
 import { parseClarifyQuestions } from './clarify'
 import { readNotificationPreferences, type BotActivity, type BotStage } from './bot-notifications'
 import { createNotificationSync, DEFAULT_BOT_NOTIFICATION_COLOR } from './notification-service'
@@ -670,10 +671,20 @@ export default function App() {
     let unsubscribe = () => {}
     let disposed = false
     void listenForApprovalActions(({ requestId, choice }) => {
+      if (requestId.startsWith(FLUX_REQUEST_PREFIX)) {
+        if (choice === 'once' || choice === 'deny') {
+          void decideFluxApproval(requestId.slice(FLUX_REQUEST_PREFIX.length), choice === 'once' ? 'approved' : 'denied')
+            .finally(() => void clearApprovalNotification(requestId))
+        }
+        return
+      }
       if (choice === 'once' || choice === 'deny') approvalBroker.answerByRequestId(requestId, choice)
     }).then(stop => { if (disposed) stop(); else unsubscribe = stop })
     return () => { disposed = true; unsubscribe() }
   }, [approvalBroker])
+
+  // Flux decisions (findings that need Graham, or a Bot asking him) arrive as the same Allow/Deny card.
+  useEffect(() => watchFluxApprovals({ post: postApprovalNotification, clear: clearApprovalNotification }), [])
 
   // A waiting approval is surfaced as a notification only while the app is not on screen,
   // and withdrawn the moment it is answered anywhere.

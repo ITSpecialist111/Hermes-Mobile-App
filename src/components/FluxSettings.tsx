@@ -2,12 +2,9 @@ import { useRef, useState } from 'react'
 import { ArrowLeft, Link2, Orbit, RefreshCw } from 'lucide-react'
 
 import { useEdgeSwipeBack } from '../edge-swipe'
+import { readFluxLiveMapUrl, writeFluxLiveMapUrl } from '../flux'
 
-const KEY = 'hermes.flux.liveMapUrl'
-
-export const readFluxLiveMapUrl = () => {
-  try { return localStorage.getItem(KEY) || '' } catch { return '' }
-}
+export { readFluxLiveMapUrl }
 
 const validLink = (value: string) => {
   try {
@@ -31,7 +28,7 @@ export function FluxSettings({ back }: { back: () => void }) {
   const save = () => {
     const value = draft.trim()
     if (!validLink(value)) return
-    try { localStorage.setItem(KEY, value) } catch { /* private mode: keep it for this visit */ }
+    writeFluxLiveMapUrl(value)
     setLink(value)
   }
 
@@ -49,7 +46,7 @@ export function FluxSettings({ back }: { back: () => void }) {
           <Orbit size={17}/>
           <div>
             <b>Connect the Live Map</b>
-            <span>Paste the Live Map link that the Flux installer printed on your Hermes host (it ends in ?key=…). Over WireGuard the same link works away from home.</span>
+            <span>Paste the Live Map link that the Flux installer printed on your Hermes host (it ends in ?key=…&amp;approve=…). With the approve part, Flux decisions also arrive here as Allow / Deny notifications. Over WireGuard the same link works away from home.</span>
           </div>
         </section>
         <section className="flux-link">
