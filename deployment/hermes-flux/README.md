@@ -2,6 +2,8 @@
 
 Flux lets Hermes bots call on **specialist agents that exist only while they are useful**. A Flux agent is a real Hermes agent (a child `hermes chat` on the `flux` worker profile). The operator defines it: persona, tools, knowledge, web access, model, budget and lifecycle. Each call returns a **cited finding** and is written to a **tamper-evident token and cost ledger**.
 
+**New here? Read [USE-CASES.md](USE-CASES.md)** for how to start a Flux conversation from a Bot, example prompts, and worked real runs.
+
 Flux keeps the portable `@corpgen/flux-runtime` 1.0.0 (vendored unchanged; see `vendor/flux-runtime`) as its policy gate. That gate handles missions, capability grants, tenant and scope, preflight, and the rule that every finding must cite something. This directory adds what a runtime of real agents needs on top.
 
 ## Hermes sub-agents vs Flux agents
